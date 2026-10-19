@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import * as permissionService from '../services/permission-service.js';
+import { authenticate } from '../middleware/auth.js';
+import { requirePerm } from '../middleware/permission.js';
 
 const router = Router();
 
@@ -11,7 +13,8 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-router.post('/', async (req, res, next) => {
+// 新建权限需 system:manage
+router.post('/', authenticate, requirePerm('system:manage'), async (req, res, next) => {
   try {
     res.json({ code: 0, data: await permissionService.createPermission(req.body || {}) });
   } catch (e) {
