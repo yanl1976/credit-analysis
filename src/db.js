@@ -33,6 +33,8 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   charset: 'utf8mb4',
   namedPlaceholders: false,
+  // DATE/DATETIME 以字符串返回，避免 mysql2 转 Date 后按本地时区序列化造成日期偏移
+  dateStrings: true,
 });
 
 const db = {

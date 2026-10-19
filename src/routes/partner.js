@@ -3,6 +3,7 @@ import * as partnerService from '../services/partner-service.js';
 import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
 import { requirePerm } from '../middleware/permission.js';
+import * as collectService from '../services/collect-service.js';
 
 const router = Router();
 
@@ -77,6 +78,72 @@ router.delete('/:id', requirePerm('customer:manage'), async (req, res, next) => 
       return res.status(403).json({ code: 403, message: '无权访问该客户' });
     }
     res.json({ code: 0, data: await partnerService.deletePartner(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 触发采集（customer:manage）
+router.post('/:id/collect', requirePerm('customer:manage'), async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await collectService.collectPartner(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/:id/collect-tasks', async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await collectService.listFetchTasks(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/:id/judicial', async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await collectService.getJudicial(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/:id/credit', async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await collectService.getCredit(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/:id/finance', async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await collectService.getFinance(Number(req.params.id)) });
   } catch (e) {
     next(e);
   }
