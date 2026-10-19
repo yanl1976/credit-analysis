@@ -138,6 +138,18 @@ export async function listFetchTasks(partnerId) {
   return db.all('SELECT * FROM fetch_task WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
 }
 
+// 采集任务汇总：按渠道+状态计数
+export async function getCollectSummary(partnerId) {
+  const rows = await db.all(
+    `SELECT channel, status, COUNT(*) AS cnt
+     FROM fetch_task WHERE partner_id = ?
+     GROUP BY channel, status ORDER BY channel, status`,
+    [partnerId],
+  );
+  const items = rows.map((r) => ({ channel: r.channel, status: r.status, count: Number(r.cnt) }));
+  return { total: items.reduce((s, x) => s + x.count, 0), items };
+}
+
 export async function getJudicial(partnerId) {
   return db.all('SELECT * FROM partner_judicial WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
 }

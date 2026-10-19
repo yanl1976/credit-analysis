@@ -149,4 +149,17 @@ router.get('/:id/finance', async (req, res, next) => {
   }
 });
 
+router.get('/:id/collect-summary', async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await collectService.getCollectSummary(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
 export default router;
