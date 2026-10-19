@@ -183,6 +183,10 @@ const DDL = [
     old_grade VARCHAR(8) NULL,
     new_grade VARCHAR(8) NULL,
     detail TEXT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'OPEN',
+    handled_by INT UNSIGNED NULL,
+    handled_at DATETIME NULL,
+    handle_note VARCHAR(500) NULL,
     created_at DATETIME NULL,
     PRIMARY KEY (id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
@@ -231,6 +235,27 @@ const COLUMN_UPGRADES = [
     table: 'partner_finance',
     column: 'listed_status',
     sql: 'ALTER TABLE partner_finance ADD COLUMN listed_status VARCHAR(16) NULL AFTER report_period',
+  },
+  // 预警处置闭环：未处理 / 处理中 / 已关闭 + 处理人与备注
+  {
+    table: 'risk_event',
+    column: 'status',
+    sql: "ALTER TABLE risk_event ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'OPEN' AFTER detail",
+  },
+  {
+    table: 'risk_event',
+    column: 'handled_by',
+    sql: 'ALTER TABLE risk_event ADD COLUMN handled_by INT UNSIGNED NULL AFTER status',
+  },
+  {
+    table: 'risk_event',
+    column: 'handled_at',
+    sql: 'ALTER TABLE risk_event ADD COLUMN handled_at DATETIME NULL AFTER handled_by',
+  },
+  {
+    table: 'risk_event',
+    column: 'handle_note',
+    sql: 'ALTER TABLE risk_event ADD COLUMN handle_note VARCHAR(500) NULL AFTER handled_at',
   },
 ];
 

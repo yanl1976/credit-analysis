@@ -43,9 +43,11 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/ai', aiRoutes);
 
 // 统一错误处理（放在所有路由之后）
+// 业务校验类错误可自带 status（如 400/403/404），其余按 500 处理
 app.use((err, req, res, next) => {
-  console.error('[server] 请求错误:', err.message);
-  res.status(500).json({ code: 500, message: err.message });
+  const status = Number(err.status) >= 400 && Number(err.status) < 600 ? Number(err.status) : 500;
+  console.error(`[server] 请求错误(${status}):`, err.message);
+  res.status(status).json({ code: status, message: err.message });
 });
 
 (async () => {

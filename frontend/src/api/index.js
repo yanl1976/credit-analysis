@@ -40,6 +40,8 @@ export const partnerApi = {
 export const riskApi = {
   list: (params) => http.get('/risk-events', { params }),
   stats: (days = 30) => http.get('/risk-events/stats', { params: { days } }),
+  // 预警处置：OPEN 待处理 / PROCESSING 处理中 / CLOSED 已关闭
+  handle: (id, body) => http.patch(`/risk-events/${id}`, body),
 };
 
 export const dashboardApi = {
