@@ -9,6 +9,7 @@ import roleRoutes from './routes/role.js';
 import permissionRoutes from './routes/permission.js';
 import authRoutes from './routes/auth.js';
 import channelsRoutes from './routes/channels.js';
+import partnerRoutes from './routes/partner.js';
 import { initChannels } from './channels/index.js';
 
 const app = express();
@@ -31,6 +32,7 @@ app.use('/api/roles', roleRoutes);
 app.use('/api/permissions', permissionRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/channels', channelsRoutes);
+app.use('/api/partners', partnerRoutes);
 
 // 统一错误处理（放在所有路由之后）
 app.use((err, req, res, next) => {
