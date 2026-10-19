@@ -116,6 +116,8 @@ export async function deletePartner(id) {
   await db.run('DELETE FROM partner_finance WHERE partner_id = ?', [id]);
   await db.run('DELETE FROM partner_raw WHERE partner_id = ?', [id]);
   await db.run('DELETE FROM partner_rating WHERE partner_id = ?', [id]);
+  await db.run('DELETE FROM partner_rating_history WHERE partner_id = ?', [id]);
+  await db.run('DELETE FROM risk_event WHERE partner_id = ?', [id]);
   await db.run('DELETE FROM fetch_task WHERE partner_id = ?', [id]);
   await db.run('DELETE FROM partner WHERE id = ?', [id]);
   return { deleted: true };

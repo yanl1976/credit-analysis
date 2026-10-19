@@ -4,7 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
 import { requirePerm } from '../middleware/permission.js';
 import * as collectService from '../services/collect-service.js';
-import { calculateScore } from '../services/scoring-service.js';
+import { calculateScore, ratePartner, getRating, getRatingHistory } from '../services/scoring-service.js';
 
 const router = Router();
 
@@ -150,7 +150,7 @@ router.get('/:id/finance', async (req, res, next) => {
   }
 });
 
-// 评分计算（report:view）
+// 评分计算 + 落库（report:view）：?dryRun=1 只算不存
 router.post('/:id/rate', requirePerm('report:view'), async (req, res, next) => {
   try {
     const partner = await partnerService.getPartner(Number(req.params.id));
@@ -158,7 +158,41 @@ router.post('/:id/rate', requirePerm('report:view'), async (req, res, next) => {
     if (!inScope(req.scope, partner.owner_org_id)) {
       return res.status(403).json({ code: 403, message: '无权访问该客户' });
     }
-    res.json({ code: 0, data: await calculateScore(Number(req.params.id)) });
+    const dryRun = req.query.dryRun === '1' || req.body?.dryRun === true;
+    const data = dryRun
+      ? await calculateScore(Number(req.params.id))
+      : await ratePartner(Number(req.params.id));
+    res.json({ code: 0, data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 当前评分
+router.get('/:id/rating', requirePerm('report:view'), async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    const data = await getRating(Number(req.params.id));
+    if (!data) return res.status(404).json({ code: 404, message: '该客户尚未评分' });
+    res.json({ code: 0, data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 历史评分（最近 N 次，默认 20，上限 200）
+router.get('/:id/rating-history', requirePerm('report:view'), async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await getRatingHistory(Number(req.params.id), req.query.limit) });
   } catch (e) {
     next(e);
   }

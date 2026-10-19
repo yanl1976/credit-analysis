@@ -1,6 +1,9 @@
+import db from '../db.js';
 import { getPartner } from './partner-service.js';
 import { getJudicial, getCredit, getFinance } from './collect-service.js';
 import { SCORING_RULES } from '../../config/scoring.js';
+
+const now = () => new Date();
 
 function push(reasons, delta, category, reason) {
   reasons.push({ delta, category, reason });
@@ -130,5 +133,114 @@ export async function calculateScore(partnerId) {
     veto,
     reasons,
     calcVersion: R.version,
+  };
+}
+
+function parseReasons(raw) {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+function mapRatingRow(row) {
+  if (!row) return null;
+  return {
+    partnerId: Number(row.partner_id),
+    score: Number(row.score),
+    grade: row.grade,
+    riskLevel: row.risk_level,
+    veto: !!Number(row.veto),
+    reasons: parseReasons(row.reasons),
+    calcVersion: row.calc_version,
+    calculatedAt: row.calculated_at,
+  };
+}
+
+// 当前评分（partner_rating 每客户仅保留最新一条）
+export async function getRating(partnerId) {
+  const row = await db.get('SELECT * FROM partner_rating WHERE partner_id = ?', [partnerId]);
+  return mapRatingRow(row);
+}
+
+// 历史评分（每次重算追加一条，供回溯对比）
+export async function getRatingHistory(partnerId, limit = 20) {
+  const n = Math.min(200, Math.max(1, Number(limit) || 20));
+  const rows = await db.all(
+    `SELECT * FROM partner_rating_history WHERE partner_id = ? ORDER BY id DESC LIMIT ?`,
+    [Number(partnerId), n],
+  );
+  return rows.map(mapRatingRow);
+}
+
+async function saveRating(result) {
+  const calculatedAt = now();
+  const reasonsJson = JSON.stringify(result.reasons || []);
+  const params = [
+    result.partnerId,
+    result.score,
+    result.grade,
+    result.riskLevel,
+    result.veto ? 1 : 0,
+    reasonsJson,
+    result.calcVersion,
+    calculatedAt,
+  ];
+  await db.run(
+    `INSERT INTO partner_rating
+      (partner_id, score, grade, risk_level, veto, reasons, calc_version, calculated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       score = VALUES(score), grade = VALUES(grade), risk_level = VALUES(risk_level),
+       veto = VALUES(veto), reasons = VALUES(reasons), calc_version = VALUES(calc_version),
+       calculated_at = VALUES(calculated_at)`,
+    params,
+  );
+  await db.run(
+    `INSERT INTO partner_rating_history
+      (partner_id, score, grade, risk_level, veto, reasons, calc_version, calculated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    params,
+  );
+  return calculatedAt;
+}
+
+// 计算 + 落库（含历史留档），等级变化时写 risk_event 供预警中心消费
+export async function ratePartner(partnerId) {
+  const id = Number(partnerId);
+  const previous = await getRating(id);
+  const result = await calculateScore(id);
+  const calculatedAt = await saveRating(result);
+
+  const gradeChanged = !!previous && previous.grade !== result.grade;
+  if (gradeChanged) {
+    await db.run(
+      `INSERT INTO risk_event (partner_id, event_type, old_grade, new_grade, detail, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        'GRADE_CHANGE',
+        previous.grade,
+        result.grade,
+        JSON.stringify({
+          prevScore: previous.score,
+          score: result.score,
+          prevRiskLevel: previous.riskLevel,
+          riskLevel: result.riskLevel,
+          calcVersion: result.calcVersion,
+        }),
+        calculatedAt,
+      ],
+    );
+  }
+
+  return {
+    ...result,
+    calculatedAt,
+    previous: previous || null,
+    gradeChanged,
   };
 }

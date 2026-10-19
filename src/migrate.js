@@ -138,6 +138,20 @@ const DDL = [
     PRIMARY KEY (partner_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  `CREATE TABLE IF NOT EXISTS partner_rating_history (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    partner_id INT UNSIGNED NOT NULL,
+    score INT NULL,
+    grade VARCHAR(8) NULL,
+    risk_level VARCHAR(8) NULL,
+    veto TINYINT NOT NULL DEFAULT 0,
+    reasons TEXT NULL,
+    calc_version VARCHAR(16) NULL,
+    calculated_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY idx_rating_history_partner (partner_id, id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS fetch_task (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     partner_id INT UNSIGNED NOT NULL,
