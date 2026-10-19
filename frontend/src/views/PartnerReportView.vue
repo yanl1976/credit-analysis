@@ -22,6 +22,15 @@
             触发采集
           </el-button>
           <el-button
+            v-if="auth.hasPerm('customer:manage')"
+            type="warning"
+            plain
+            :loading="aiCollecting"
+            @click="handleAiCollect"
+          >
+            AI 检索
+          </el-button>
+          <el-button
             v-if="auth.hasPerm('report:view')"
             type="primary"
             :loading="rating"
@@ -32,6 +41,16 @@
         </div>
       </div>
     </div>
+
+    <el-alert
+      v-if="aiNote"
+      type="warning"
+      :closable="true"
+      show-icon
+      class="mb12"
+      title="AI 检索结果说明"
+      :description="aiNote"
+    />
 
     <div class="score-row">
       <div class="page-card score-card">
@@ -87,6 +106,11 @@
             <el-table-column prop="amount" label="标的(元)" width="120" align="right" />
             <el-table-column prop="status" label="状态" width="90" />
             <el-table-column prop="date" label="日期" width="120" />
+            <el-table-column label="来源" width="100">
+              <template #default="{ row }">
+                <el-tag size="small" :type="sourceTagType(row.data_source)">{{ sourceLabel(row.data_source) }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column v-if="auth.hasPerm('customer:manage')" label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openDim('judicial', row)">编辑</el-button>
@@ -109,6 +133,11 @@
             <el-table-column prop="reason" label="原因" min-width="200" />
             <el-table-column prop="penalty" label="处罚内容" min-width="140" />
             <el-table-column prop="date" label="日期" width="120" />
+            <el-table-column label="来源" width="100">
+              <template #default="{ row }">
+                <el-tag size="small" :type="sourceTagType(row.data_source)">{{ sourceLabel(row.data_source) }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column v-if="auth.hasPerm('customer:manage')" label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openDim('credit', row)">编辑</el-button>
@@ -131,6 +160,11 @@
             <el-table-column prop="rev_yoy" label="营收同比" width="110" align="right" />
             <el-table-column prop="profit" label="利润" width="130" align="right" />
             <el-table-column prop="employee_cnt" label="员工数" width="100" align="right" />
+            <el-table-column label="来源" width="100">
+              <template #default="{ row }">
+                <el-tag size="small" :type="sourceTagType(row.data_source)">{{ sourceLabel(row.data_source) }}</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column v-if="auth.hasPerm('customer:manage')" label="操作" width="120" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openDim('finance', row)">编辑</el-button>
@@ -197,7 +231,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { partnerApi } from '../api/index.js';
+import { partnerApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
 import { gradeTagType, riskTagType, deltaClass, sourceLabel, sourceTagType } from '../utils/grade.js';
 
@@ -207,6 +241,8 @@ const id = Number(route.params.id);
 
 const loading = ref(false);
 const collecting = ref(false);
+const aiCollecting = ref(false);
+const aiNote = ref('');
 const rating = ref(false);
 const tab = ref('judicial');
 
@@ -356,6 +392,28 @@ async function handleCollect() {
   }
 }
 
+async function handleAiCollect() {
+  aiCollecting.value = true;
+  aiNote.value = '';
+  try {
+    const res = await aiApi.collect(id);
+    const a = res.added || {};
+    const s = res.scored;
+    ElMessage.success(
+      `AI 检索完成：司法 ${a.judicial || 0} / 合规 ${a.credit || 0} / 财务 ${a.finance || 0} 条` +
+        (a.skipped ? `（去重跳过 ${a.skipped}）` : '') +
+        (s ? `，评分 ${s.score} 分 / ${s.grade}` : ''),
+    );
+    const searchNote = res.meta?.search?.configured
+      ? `已联网检索 ${res.meta.search.count} 条资料`
+      : '未配置搜索 Key，本次未联网，仅为模型知识推断，可能存在缺漏';
+    aiNote.value = `${res.disclaimer}（${searchNote}；所有 AI 记录来源标记为「AI 推断」，请核验）`;
+    await loadAll();
+  } finally {
+    aiCollecting.value = false;
+  }
+}
+
 onMounted(loadAll);
 </script>
 
@@ -428,6 +486,9 @@ onMounted(loadAll);
   color: #909399;
   font-size: 13px;
   margin-left: auto;
+}
+.mb12 {
+  margin-bottom: 12px;
 }
 :deep(.delta-minus) {
   color: #f56c6c;

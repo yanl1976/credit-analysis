@@ -18,8 +18,8 @@ export async function saveJudicial(partnerId, items = []) {
   for (const it of items) {
     await db.run(
       `INSERT INTO partner_judicial
-        (partner_id, case_type, party_role, case_no, court, amount, status, date, detail_json, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (partner_id, case_type, party_role, case_no, court, amount, status, date, detail_json, fetched_at, data_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         partnerId,
         it.caseType || null,
@@ -31,6 +31,7 @@ export async function saveJudicial(partnerId, items = []) {
         it.date || null,
         it.detail ? JSON.stringify(it.detail) : null,
         now(),
+        'channel',
       ],
     );
     n++;
@@ -43,8 +44,8 @@ export async function saveCredit(partnerId, items = []) {
   for (const it of items) {
     await db.run(
       `INSERT INTO partner_credit
-        (partner_id, item_type, authority, reason, penalty, date, detail_json, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (partner_id, item_type, authority, reason, penalty, date, detail_json, fetched_at, data_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         partnerId,
         it.itemType || null,
@@ -54,6 +55,7 @@ export async function saveCredit(partnerId, items = []) {
         it.date || null,
         it.detail ? JSON.stringify(it.detail) : null,
         now(),
+        'channel',
       ],
     );
     n++;
@@ -66,8 +68,8 @@ export async function saveFinance(partnerId, items = []) {
   for (const it of items) {
     await db.run(
       `INSERT INTO partner_finance
-        (partner_id, src, rev_yoy, profit, scale_tag, employee_cnt, bid_cnt, detail_json, fetched_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (partner_id, src, rev_yoy, profit, scale_tag, employee_cnt, bid_cnt, detail_json, fetched_at, data_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         partnerId,
         it.src || null,
@@ -78,6 +80,7 @@ export async function saveFinance(partnerId, items = []) {
         it.bidCnt ?? null,
         it.detail ? JSON.stringify(it.detail) : null,
         now(),
+        'channel',
       ],
     );
     n++;
@@ -247,8 +250,9 @@ export async function listDimension(kind, partnerId) {
 export async function createDimension(kind, partnerId, item = {}) {
   const def = dimDef(kind);
   const { cols, params } = pickColumns(def, item);
-  const allCols = ['partner_id', ...cols, 'fetched_at'];
-  const allParams = [Number(partnerId), ...params, now()];
+  const source = ['manual', 'channel', 'ai', 'demo'].includes(item.dataSource) ? item.dataSource : 'manual';
+  const allCols = ['partner_id', ...cols, 'fetched_at', 'data_source'];
+  const allParams = [Number(partnerId), ...params, now(), source];
   const r = await db.run(
     `INSERT INTO ${def.table} (${allCols.join(', ')}) VALUES (${allCols.map(() => '?').join(', ')})`,
     allParams,

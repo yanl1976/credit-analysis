@@ -65,6 +65,12 @@ export const permissionApi = {
   list: () => http.get('/permissions'),
 };
 
+export const aiApi = {
+  status: () => http.get('/ai/status'),
+  profile: (name) => http.post('/ai/partner-profile', { name }),
+  collect: (id) => http.post(`/ai/collect/${id}`),
+};
+
 export const settingApi = {
   public: () => http.get('/settings/public'),
   grouped: () => http.get('/settings'),

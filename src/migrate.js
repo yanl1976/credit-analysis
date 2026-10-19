@@ -191,6 +191,21 @@ const COLUMN_UPGRADES = [
     column: 'data_source',
     sql: "ALTER TABLE partner ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual' AFTER industry",
   },
+  {
+    table: 'partner_judicial',
+    column: 'data_source',
+    sql: "ALTER TABLE partner_judicial ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual'",
+  },
+  {
+    table: 'partner_credit',
+    column: 'data_source',
+    sql: "ALTER TABLE partner_credit ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual'",
+  },
+  {
+    table: 'partner_finance',
+    column: 'data_source',
+    sql: "ALTER TABLE partner_finance ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual'",
+  },
 ];
 
 async function ensureColumns() {

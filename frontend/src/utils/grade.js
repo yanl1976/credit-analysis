@@ -23,6 +23,7 @@ export const SOURCE_LABELS = {
   manual: '手工录入',
   demo: '演示数据',
   channel: '渠道采集',
+  ai: 'AI 推断',
 };
 
 export function sourceLabel(source) {
@@ -32,6 +33,7 @@ export function sourceLabel(source) {
 export function sourceTagType(source) {
   if (source === 'demo') return 'warning';
   if (source === 'channel') return 'success';
+  if (source === 'ai') return 'danger';
   return 'info';
 }
 

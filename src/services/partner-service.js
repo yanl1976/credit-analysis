@@ -57,7 +57,7 @@ export async function createPartner({
     if (exists) return { ...exists, _normalized: true };
   }
 
-  const source = ['manual', 'demo', 'channel'].includes(dataSource) ? dataSource : 'manual';
+  const source = ['manual', 'demo', 'channel', 'ai'].includes(dataSource) ? dataSource : 'manual';
   const r = await db.run(
     `INSERT INTO partner
       (owner_org_id, credit_code, name, alias_names, legal_person, reg_status, province, industry, data_source, created_at, updated_at)

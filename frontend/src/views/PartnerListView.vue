@@ -80,7 +80,42 @@
       @size-change="onSizeChange"
     />
 
-    <el-dialog v-model="createVisible" title="新建客户" width="520px">
+    <el-dialog v-model="createVisible" title="新建客户" width="560px">
+      <div v-if="aiStatus.configured" class="ai-bar">
+        <el-input
+          v-model="aiQuery"
+          placeholder="输入企业名称，AI 查询后自动填充下方字段"
+          clearable
+          @keyup.enter="aiFill"
+        />
+        <el-button type="primary" plain :loading="aiLoading" @click="aiFill">AI 查询填充</el-button>
+      </div>
+      <el-alert
+        v-if="aiStatus.configured && !aiStatus.search?.configured"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="mb10"
+        title="当前未配置搜索 Key，AI 只能依据已有知识推断，可能过时；请务必核验后再保存。"
+      />
+      <el-alert
+        v-if="aiMeta"
+        :type="aiMeta.confidence === 'low' ? 'warning' : 'success'"
+        :closable="false"
+        show-icon
+        class="mb10"
+        :title="`AI 生成草稿（置信度 ${aiMeta.confidence}），共 ${aiMeta.evidence?.length || 0} 条检索证据，保存前请逐项核验`"
+      >
+        <div v-if="aiMeta.notes?.length" class="ai-notes">
+          <div v-for="(n, i) in aiMeta.notes" :key="i">· {{ n }}</div>
+        </div>
+        <div v-if="aiMeta.evidence?.length" class="ai-notes">
+          <div v-for="(e, i) in aiMeta.evidence" :key="'e' + i">
+            · <el-link type="primary" :href="e.url" target="_blank">{{ e.title || e.url }}</el-link>
+          </div>
+        </div>
+      </el-alert>
+
       <el-form :model="form" label-width="120px">
         <el-form-item label="客户名称" required>
           <el-input v-model="form.name" placeholder="企业全称" />
@@ -120,7 +155,7 @@
 import { onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { partnerApi, authApi, orgApi, settingApi } from '../api/index.js';
+import { partnerApi, authApi, orgApi, settingApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
 import { sourceLabel, sourceTagType } from '../utils/grade.js';
 
@@ -142,6 +177,11 @@ const regStatuses = ['存续', '在营', '开业', '吊销', '注销', '迁出',
 
 const createVisible = ref(false);
 const saving = ref(false);
+const aiStatus = reactive({ configured: false, search: { configured: false }, note: '' });
+const aiQuery = ref('');
+const aiLoading = ref(false);
+const aiFilled = ref(false);
+const aiMeta = ref(null);
 const form = reactive({
   name: '',
   creditCode: '',
@@ -187,7 +227,31 @@ function openCreate() {
     province: '',
     ownerOrgId: null,
   });
+  aiQuery.value = '';
+  aiFilled.value = false;
+  aiMeta.value = null;
   createVisible.value = true;
+}
+
+async function aiFill() {
+  const name = (aiQuery.value || form.name || '').trim();
+  if (!name) return ElMessage.warning('请输入企业名称');
+  aiLoading.value = true;
+  try {
+    const res = await aiApi.profile(name);
+    const p = res.profile || {};
+    if (p.name) form.name = p.name;
+    if (p.creditCode) form.creditCode = p.creditCode;
+    if (p.legalPerson) form.legalPerson = p.legalPerson;
+    if (p.regStatus) form.regStatus = p.regStatus;
+    if (p.province) form.province = p.province;
+    if (p.industry) form.industry = p.industry;
+    aiFilled.value = true;
+    aiMeta.value = { confidence: res.confidence, notes: res.notes || [], evidence: res.evidence || [], meta: res.meta };
+    ElMessage.success(`AI 已填充（置信度 ${res.confidence}），请核验后保存`);
+  } finally {
+    aiLoading.value = false;
+  }
 }
 
 async function handleCreate() {
@@ -197,7 +261,11 @@ async function handleCreate() {
   }
   saving.value = true;
   try {
-    const created = await partnerApi.create({ ...form, ownerOrgId: form.ownerOrgId || undefined });
+    const created = await partnerApi.create({
+      ...form,
+      ownerOrgId: form.ownerOrgId || undefined,
+      dataSource: aiFilled.value ? 'ai' : 'manual',
+    });
     ElMessage.success(created?._normalized ? '已存在同信用代码客户，已直接复用' : '创建成功');
     createVisible.value = false;
     await load(1);
@@ -259,6 +327,13 @@ onMounted(async () => {
   const s = await authApi.scope();
   Object.assign(scope, s);
   if (s.isFull) orgs.value = (await orgApi.list()) || [];
+  if (auth.hasPerm('customer:manage')) {
+    try {
+      Object.assign(aiStatus, await aiApi.status());
+    } catch {
+      /* AI 未启用时忽略 */
+    }
+  }
 });
 </script>
 
@@ -271,5 +346,19 @@ onMounted(async () => {
 .pager {
   margin-top: 14px;
   justify-content: flex-end;
+}
+.ai-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.mb10 {
+  margin-bottom: 10px;
+}
+.ai-notes {
+  font-size: 12px;
+  color: #606266;
+  line-height: 1.7;
+  margin-top: 4px;
 }
 </style>
