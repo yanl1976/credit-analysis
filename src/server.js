@@ -7,6 +7,7 @@ import orgRoutes from './routes/org.js';
 import userRoutes from './routes/user.js';
 import roleRoutes from './routes/role.js';
 import permissionRoutes from './routes/permission.js';
+import authRoutes from './routes/auth.js';
 
 const app = express();
 app.use(express.json());
@@ -26,6 +27,7 @@ app.use('/api/orgs', orgRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/roles', roleRoutes);
 app.use('/api/permissions', permissionRoutes);
+app.use('/api/auth', authRoutes);
 
 // 统一错误处理（放在所有路由之后）
 app.use((err, req, res, next) => {
