@@ -1,11 +1,12 @@
 <template>
   <el-container class="layout">
     <el-aside width="200px" class="aside">
-      <div class="brand">合作方资信分析</div>
+      <div class="brand">{{ systemName }}</div>
       <el-menu :default-active="activeMenu" router class="menu">
         <el-menu-item index="/dashboard">概览看板</el-menu-item>
         <el-menu-item index="/partners">客户管理</el-menu-item>
         <el-menu-item index="/risk-center">预警中心</el-menu-item>
+        <el-menu-item v-if="auth.hasPerm('system:manage')" index="/settings">系统设置</el-menu-item>
       </el-menu>
     </el-aside>
     <el-container>
@@ -24,13 +25,25 @@
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
+import { settingApi } from '../api/index.js';
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
+const systemName = ref('合作方资信分析系统');
+
+onMounted(async () => {
+  try {
+    const s = await settingApi.public();
+    if (s?.name) systemName.value = s.name;
+    document.title = `${route.meta.title || ''} · ${systemName.value}`;
+  } catch {
+    /* 公开设置读取失败时用默认名 */
+  }
+});
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/partners')) return '/partners';

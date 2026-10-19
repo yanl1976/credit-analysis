@@ -12,6 +12,7 @@ import channelsRoutes from './routes/channels.js';
 import partnerRoutes from './routes/partner.js';
 import riskRoutes from './routes/risk.js';
 import dashboardRoutes from './routes/dashboard.js';
+import settingsRoutes from './routes/settings.js';
 import { initChannels } from './channels/index.js';
 
 const app = express();
@@ -37,6 +38,7 @@ app.use('/api/channels', channelsRoutes);
 app.use('/api/partners', partnerRoutes);
 app.use('/api/risk-events', riskRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // 统一错误处理（放在所有路由之后）
 app.use((err, req, res, next) => {

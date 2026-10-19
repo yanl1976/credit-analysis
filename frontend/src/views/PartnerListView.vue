@@ -115,7 +115,7 @@
 import { onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { partnerApi, authApi, orgApi } from '../api/index.js';
+import { partnerApi, authApi, orgApi, settingApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
 
 const auth = useAuthStore();
@@ -243,6 +243,12 @@ async function handleDelete(row) {
 }
 
 onMounted(async () => {
+  try {
+    const pub = await settingApi.public();
+    if (pub?.pageSize) pageSize.value = Number(pub.pageSize) || 20;
+  } catch {
+    /* 使用默认分页 */
+  }
   await load(1);
   const s = await authApi.scope();
   Object.assign(scope, s);

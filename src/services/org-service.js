@@ -84,6 +84,10 @@ export async function deleteOrg(id) {
   if (!org) throw new Error('组织不存在');
   const children = await db.get('SELECT COUNT(*) AS c FROM org WHERE parent_id = ?', [id]);
   if (Number(children.c) > 0) throw new Error('存在子组织，不能删除');
+  const users = await db.get('SELECT COUNT(*) AS c FROM sys_user WHERE org_id = ?', [id]);
+  if (Number(users.c) > 0) throw new Error('该组织下存在用户，不能删除');
+  const roles = await db.get('SELECT COUNT(*) AS c FROM sys_role WHERE org_id = ?', [id]);
+  if (Number(roles.c) > 0) throw new Error('该组织下存在角色，不能删除');
   await db.run('DELETE FROM org WHERE id = ?', [id]);
   return { deleted: true };
 }

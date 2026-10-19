@@ -14,6 +14,38 @@ export async function listRoles({ orgIds } = {}) {
   return db.all('SELECT * FROM sys_role ORDER BY id');
 }
 
+// 角色列表（含所属组织、权限数、用户数），供系统设置页展示
+export async function listRolesWithStats({ orgIds } = {}) {
+  const where = [];
+  const params = [];
+  if (Array.isArray(orgIds)) {
+    if (!orgIds.length) return [];
+    where.push(`r.org_id IN (${orgIds.map(() => '?').join(',')})`);
+    params.push(...orgIds.map(Number));
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await db.all(
+    `SELECT r.*, o.org_name,
+            (SELECT COUNT(*) FROM sys_role_permission rp WHERE rp.role_id = r.id) AS perm_count,
+            (SELECT COUNT(*) FROM sys_user_role ur WHERE ur.role_id = r.id) AS user_count
+       FROM sys_role r LEFT JOIN org o ON o.id = r.org_id
+       ${whereSql}
+      ORDER BY r.id`,
+    params,
+  );
+  return rows.map((r) => ({
+    id: Number(r.id),
+    orgId: Number(r.org_id),
+    orgName: r.org_name,
+    roleKey: r.role_key,
+    roleName: r.role_name,
+    description: r.description,
+    createdAt: r.created_at,
+    permCount: Number(r.perm_count || 0),
+    userCount: Number(r.user_count || 0),
+  }));
+}
+
 export async function createRole({ orgId, roleKey, roleName, description }) {
   if (!orgId) throw new Error('orgId 必填');
   if (!roleKey || !String(roleKey).trim()) throw new Error('roleKey 必填');

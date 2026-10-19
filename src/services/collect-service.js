@@ -1,6 +1,7 @@
 import db from '../db.js';
 import { getPartner } from './partner-service.js';
 import { listConnectors } from '../channels/registry.js';
+import { getSetting } from './setting-service.js';
 
 const now = () => new Date();
 
@@ -89,6 +90,7 @@ export async function collectPartner(partnerId) {
   const partner = await getPartner(partnerId);
   if (!partner) throw new Error('客户不存在');
 
+  const recordRaw = await getSetting('collect.recordRaw', true);
   const connectors = listConnectors();
   const tasks = [];
   for (const c of connectors) {
@@ -107,7 +109,7 @@ export async function collectPartner(partnerId) {
 
         if (result && result.ok) {
           status = 'ok';
-          await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result);
+          if (recordRaw) await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result);
           const normalized = result.normalized || {};
           if (Array.isArray(normalized.judicial)) await saveJudicial(partnerId, normalized.judicial);
           if (Array.isArray(normalized.credit)) await saveCredit(partnerId, normalized.credit);
@@ -115,7 +117,7 @@ export async function collectPartner(partnerId) {
         } else {
           status = 'not_implemented';
           errMsg = result?.reason || '渠道未返回数据';
-          await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result || null);
+          if (recordRaw) await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result || null);
         }
       } catch (e) {
         status = 'error';
@@ -131,7 +133,19 @@ export async function collectPartner(partnerId) {
     tasks.push({ channel: c.key, status, costMs, err: errMsg });
   }
 
-  return { partnerId, tasks };
+  // 系统设置：采集后自动重算（失败不阻断采集结果返回）
+  let scored = null;
+  let scoreError = null;
+  if (await getSetting('scoring.autoRecalcOnCollect', true)) {
+    try {
+      const { ratePartner } = await import('./scoring-service.js');
+      scored = await ratePartner(partnerId);
+    } catch (e) {
+      scoreError = e.message;
+    }
+  }
+
+  return { partnerId, tasks, scored, scoreError };
 }
 
 export async function listFetchTasks(partnerId) {

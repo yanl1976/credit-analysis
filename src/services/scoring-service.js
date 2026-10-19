@@ -2,6 +2,7 @@ import db from '../db.js';
 import { getPartner } from './partner-service.js';
 import { getJudicial, getCredit, getFinance } from './collect-service.js';
 import { SCORING_RULES } from '../../config/scoring.js';
+import { getSetting } from './setting-service.js';
 
 const now = () => new Date();
 
@@ -227,7 +228,8 @@ export async function ratePartner(partnerId) {
   const calculatedAt = await saveRating(result);
 
   const gradeChanged = !!previous && previous.grade !== result.grade;
-  if (gradeChanged) {
+  const recordEvent = await getSetting('warning.recordGradeChange', true);
+  if (gradeChanged && recordEvent) {
     await db.run(
       `INSERT INTO risk_event (partner_id, event_type, old_grade, new_grade, detail, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -253,6 +255,7 @@ export async function ratePartner(partnerId) {
     calculatedAt,
     previous: previous || null,
     gradeChanged,
+    riskEventRecorded: gradeChanged && recordEvent,
   };
 }
 

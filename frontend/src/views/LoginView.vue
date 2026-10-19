@@ -1,7 +1,7 @@
 <template>
   <div class="login-wrap">
     <el-card class="login-card">
-      <div class="brand">合作方资信分析系统</div>
+      <div class="brand">{{ systemName }}</div>
       <div class="sub">客户资信 · 风险评分 · 变更预警</div>
       <el-form :model="form" @submit.prevent="handleLogin">
         <el-form-item>
@@ -26,16 +26,27 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '../stores/auth.js';
+import { settingApi } from '../api/index.js';
 
 const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
 const loading = ref(false);
+const systemName = ref('合作方资信分析系统');
 const form = reactive({ username: '', password: '' });
+
+onMounted(async () => {
+  try {
+    const s = await settingApi.public();
+    if (s?.name) systemName.value = s.name;
+  } catch {
+    /* 忽略 */
+  }
+});
 
 async function handleLogin() {
   if (!form.username || !form.password) {

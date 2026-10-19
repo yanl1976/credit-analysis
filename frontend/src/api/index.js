@@ -28,10 +28,43 @@ export const riskApi = {
   stats: (days = 30) => http.get('/risk-events/stats', { params: { days } }),
 };
 
-export const orgApi = {
-  list: () => http.get('/orgs'),
-};
-
 export const dashboardApi = {
   overview: () => http.get('/dashboard/overview'),
+};
+
+export const orgApi = {
+  list: () => http.get('/orgs'),
+  tree: () => http.get('/orgs/tree'),
+  create: (body) => http.post('/orgs', body),
+  update: (id, body) => http.put(`/orgs/${id}`, body),
+  remove: (id) => http.delete(`/orgs/${id}`),
+};
+
+export const userApi = {
+  list: (params) => http.get('/users', { params }),
+  create: (body) => http.post('/users', body),
+  update: (id, body) => http.put(`/users/${id}`, body),
+  remove: (id) => http.delete(`/users/${id}`),
+  roles: (id) => http.get(`/users/${id}/roles`),
+  assignRoles: (id, roleIds) => http.put(`/users/${id}/roles`, { roleIds }),
+};
+
+export const roleApi = {
+  list: () => http.get('/roles'),
+  create: (body) => http.post('/roles', body),
+  update: (id, body) => http.put(`/roles/${id}`, body),
+  remove: (id) => http.delete(`/roles/${id}`),
+  permissions: (id) => http.get(`/roles/${id}/permissions`),
+  assignPermissions: (id, permissionIds) => http.put(`/roles/${id}/permissions`, { permissionIds }),
+};
+
+export const permissionApi = {
+  list: () => http.get('/permissions'),
+};
+
+export const settingApi = {
+  public: () => http.get('/settings/public'),
+  grouped: () => http.get('/settings'),
+  save: (values) => http.put('/settings', { values }),
+  channels: () => http.get('/settings/channels'),
 };

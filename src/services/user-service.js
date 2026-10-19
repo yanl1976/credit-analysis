@@ -24,6 +24,49 @@ export async function listUsers({ orgIds } = {}) {
   return db.all(`SELECT ${SAFE_FIELDS} FROM sys_user ORDER BY id`);
 }
 
+// 用户列表（含所属组织与角色），供系统设置页展示
+export async function listUsersWithRoles({ orgIds, keyword } = {}) {
+  const where = [];
+  const params = [];
+  if (Array.isArray(orgIds)) {
+    if (!orgIds.length) return [];
+    where.push(`u.org_id IN (${orgIds.map(() => '?').join(',')})`);
+    params.push(...orgIds.map(Number));
+  }
+  if (keyword) {
+    where.push('(u.username LIKE ? OR u.real_name LIKE ?)');
+    params.push(`%${keyword}%`, `%${keyword}%`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await db.all(
+    `SELECT u.id, u.org_id, u.username, u.real_name, u.status, u.created_at, o.org_name
+       FROM sys_user u LEFT JOIN org o ON o.id = u.org_id
+       ${whereSql}
+      ORDER BY u.id`,
+    params,
+  );
+  const links = await db.all(
+    `SELECT ur.user_id, r.id, r.role_key, r.role_name
+       FROM sys_user_role ur JOIN sys_role r ON r.id = ur.role_id
+      ORDER BY r.id`,
+  );
+  const byUser = new Map();
+  for (const l of links) {
+    if (!byUser.has(Number(l.user_id))) byUser.set(Number(l.user_id), []);
+    byUser.get(Number(l.user_id)).push({ id: Number(l.id), roleKey: l.role_key, roleName: l.role_name });
+  }
+  return rows.map((u) => ({
+    id: Number(u.id),
+    orgId: Number(u.org_id),
+    orgName: u.org_name,
+    username: u.username,
+    realName: u.real_name,
+    status: Number(u.status),
+    createdAt: u.created_at,
+    roles: byUser.get(Number(u.id)) || [],
+  }));
+}
+
 export async function createUser({ orgId, username, password, realName, status = 1 }) {
   if (!orgId) throw new Error('orgId 必填');
   if (!username || !String(username).trim()) throw new Error('username 必填');
@@ -41,12 +84,18 @@ export async function createUser({ orgId, username, password, realName, status =
   return getUser(Number(r.lastInsertRowid));
 }
 
-export async function updateUser(id, { realName, status, password }) {
+export async function updateUser(id, { realName, status, password, orgId }) {
   const user = await db.get('SELECT id FROM sys_user WHERE id = ?', [id]);
   if (!user) throw new Error('用户不存在');
 
   const fields = [];
   const params = [];
+  if (orgId !== undefined) {
+    const org = await db.get('SELECT id FROM org WHERE id = ?', [Number(orgId)]);
+    if (!org) throw new Error('组织不存在');
+    fields.push('org_id = ?');
+    params.push(Number(orgId));
+  }
   if (realName !== undefined) {
     fields.push('real_name = ?');
     params.push(realName);

@@ -132,6 +132,13 @@ async function loadStats() {
 }
 
 onMounted(async () => {
+  try {
+    const { settingApi } = await import('../api/index.js');
+    const pub = await settingApi.public();
+    if (pub?.pageSize) pageSize.value = Number(pub.pageSize) || 20;
+  } catch {
+    /* 使用默认分页 */
+  }
   await Promise.all([load(1), loadStats()]);
 });
 </script>

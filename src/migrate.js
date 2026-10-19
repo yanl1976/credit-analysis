@@ -138,6 +138,14 @@ const DDL = [
     PRIMARY KEY (partner_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+  `CREATE TABLE IF NOT EXISTS sys_setting (
+    setting_key VARCHAR(64) NOT NULL,
+    setting_value TEXT NULL,
+    description VARCHAR(200) NULL,
+    updated_at DATETIME NULL,
+    PRIMARY KEY (setting_key)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
   `CREATE TABLE IF NOT EXISTS partner_rating_history (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     partner_id INT UNSIGNED NOT NULL,

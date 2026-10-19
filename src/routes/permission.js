@@ -5,7 +5,8 @@ import { requirePerm } from '../middleware/permission.js';
 
 const router = Router();
 
-router.get('/', async (req, res, next) => {
+// 权限清单：登录即可读（角色授权页需要）
+router.get('/', authenticate, async (req, res, next) => {
   try {
     res.json({ code: 0, data: await permissionService.listPermissions() });
   } catch (e) {

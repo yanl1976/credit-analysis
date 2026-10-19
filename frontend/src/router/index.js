@@ -37,6 +37,12 @@ const routes = [
         component: () => import('../views/RiskCenterView.vue'),
         meta: { title: '预警中心' },
       },
+      {
+        path: 'settings',
+        name: 'settings',
+        component: () => import('../views/SettingsView.vue'),
+        meta: { title: '系统设置' },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/partners' },
