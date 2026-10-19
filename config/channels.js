@@ -39,20 +39,9 @@ export const channels = {
     dailyMaxCalls: Number(process.env.CHANNEL_DAILY_MAX_CALLS || 200),
     dailyMaxCost: Number(process.env.CHANNEL_DAILY_MAX_COST || 50),
   },
-  creditChina: {
-    key: 'creditChina',
-    name: '信用中国',
-    enabled: true,
-    apiKey: '',
-    base: 'https://www.creditchina.gov.cn',
-  },
-  zhixing: {
-    key: 'zhixing',
-    name: '执行信息公开网',
-    enabled: true,
-    apiKey: '',
-    base: 'http://zxgk.court.gov.cn',
-  },
+  // 已移除：信用中国 / 执行信息公开网
+  // 原因：两站均启用验证码 + WAF，自动采集不可行；绕验证码既不稳也不合规。
+  // 决策（2026-10-19）：这两个渠道不再注册，主体信息与经营风险统一由天眼查开放平台获取。
 };
 
 // 返回当前已启用（配置了 Key / 默认公开）的渠道列表

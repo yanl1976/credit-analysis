@@ -166,6 +166,7 @@ const DDL = [
     partner_id INT UNSIGNED NOT NULL,
     channel VARCHAR(32) NULL,
     status VARCHAR(16) NULL,
+    reason_code VARCHAR(32) NULL,
     cost_ms INT NULL,
     err_msg TEXT NULL,
     created_at DATETIME NULL,
@@ -205,6 +206,12 @@ const COLUMN_UPGRADES = [
     table: 'partner_finance',
     column: 'data_source',
     sql: "ALTER TABLE partner_finance ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual'",
+  },
+  {
+    // 失败原因分类（欠费/额度/配置/代码/数据/网络），便于筛选与统计
+    table: 'fetch_task',
+    column: 'reason_code',
+    sql: 'ALTER TABLE fetch_task ADD COLUMN reason_code VARCHAR(32) NULL AFTER status',
   },
 ];
 

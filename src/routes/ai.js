@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getAiStatus, profilePartner, aiCollect } from '../services/ai-service.js';
+import { startAiCollectJob, getAiJob } from '../services/ai-job.js';
 import * as partnerService from '../services/partner-service.js';
 import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
@@ -41,6 +42,35 @@ router.post('/collect/:id', requirePerm('customer:manage'), dataScope, async (re
       return res.status(403).json({ code: 403, message: '无权访问该客户' });
     }
     res.json({ code: 0, data: await aiCollect(partner.id) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 异步版 AI 采集：立即返回 jobId，前端轮询 /collect/jobs/:jobId 拿进度（含百分比与当前步骤）
+router.post('/collect/:id/job', requirePerm('customer:manage'), dataScope, async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: startAiCollectJob(partner.id) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/collect/jobs/:jobId', dataScope, async (req, res, next) => {
+  try {
+    const job = getAiJob(req.params.jobId);
+    if (!job) return res.status(404).json({ code: 404, message: '任务不存在或已过期（进程重启后需重新发起）' });
+    const partner = await partnerService.getPartner(job.partnerId);
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: job });
   } catch (e) {
     next(e);
   }

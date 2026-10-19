@@ -2,8 +2,25 @@ import db from '../db.js';
 import { getPartner } from './partner-service.js';
 import { listConnectors } from '../channels/registry.js';
 import { getSetting } from './setting-service.js';
+import { REASON, reasonMeta, reasonOfException, CATEGORY_LABEL } from '../channels/error-codes.js';
 
 const now = () => new Date();
+
+// 渠道中文名。信用中国/执行信息公开网已停用（不再注册），保留映射仅用于历史 fetch_task 记录展示
+const CHANNEL_LABEL = {
+  qcc: '企查查',
+  tianyancha: '天眼查',
+  creditChina: '信用中国（已停用）',
+  zhixing: '执行信息公开网（已停用）',
+};
+
+// reasonCode → fetch_task.status（状态只用于聚合统计，具体原因看 reason_code）
+const STATUS_OF_REASON = {
+  [REASON.DISABLED]: 'skipped',
+  [REASON.NOT_CONFIGURED]: 'error',
+  [REASON.NOT_IMPLEMENTED]: 'not_implemented',
+  [REASON.MISMATCH]: 'mismatch',
+};
 
 export async function saveRaw(partnerId, channel, bizKey, payload) {
   const r = await db.run(
@@ -167,13 +184,21 @@ export async function collectPartner(partnerId) {
   for (const c of connectors) {
     const started = Date.now();
     let status;
+    let reasonCode = null;
     let errMsg = null;
     let basicFilled = [];
     let mode = null;
 
-    if (!c.isConfigured()) {
+    if (!c.enabled) {
+      // 用户没启用该渠道 → 属于预期内的"不参与本次采集"，不能出现在失败提示里
       status = 'skipped';
-      errMsg = '未配置/未启用';
+      reasonCode = REASON.DISABLED;
+      errMsg = '未启用，本次不参与采集';
+    } else if (!c.isConfigured()) {
+      // 开关是打开的却缺 Key：这是配置问题，必须提示，否则会永远静默不工作
+      status = 'error';
+      reasonCode = REASON.NOT_CONFIGURED;
+      errMsg = '渠道已启用但未填写 API Key（请求未发出）';
     } else {
       try {
         // 第二个参数传入完整 partner，便于渠道做主体校验（信用代码/名称/曾用名/法人）
@@ -195,24 +220,41 @@ export async function collectPartner(partnerId) {
           if (Array.isArray(normalized.credit)) await saveCredit(partnerId, normalized.credit);
           if (Array.isArray(normalized.finance)) await saveFinance(partnerId, normalized.finance);
         } else {
-          // 主体校验未通过 ≠ 接口异常：单独标记，便于前端区分“查到了但不是这家公司”
+          // 失败原因一律由渠道给出 reasonCode，这里只做映射；老渠道没给就按"是否真发过请求"兜底
           const mismatch = result?.meta?.match && result.meta.match.matched === false;
-          status = mismatch ? 'mismatch' : 'not_implemented';
+          reasonCode = result?.reasonCode || (mismatch ? REASON.MISMATCH : mode ? REASON.API_ERROR : REASON.NOT_IMPLEMENTED);
+          if (mismatch) reasonCode = REASON.MISMATCH;
+          status = STATUS_OF_REASON[reasonCode] || 'error';
           errMsg = result?.reason || '渠道未返回数据';
           if (recordRaw) await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result || null);
         }
       } catch (e) {
-        status = 'error';
+        // 抛异常基本都是网络/超时/代码 bug，不能混同为"未实现"
+        reasonCode = reasonOfException(e);
+        status = STATUS_OF_REASON[reasonCode] || 'error';
         errMsg = e.message;
       }
     }
 
     const costMs = Date.now() - started;
     await db.run(
-      'INSERT INTO fetch_task (partner_id, channel, status, cost_ms, err_msg, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [partnerId, c.key, status, costMs, errMsg, now()],
+      'INSERT INTO fetch_task (partner_id, channel, status, reason_code, cost_ms, err_msg, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [partnerId, c.key, status, reasonCode, costMs, errMsg, now()],
     );
-    tasks.push({ channel: c.key, status, costMs, err: errMsg, mode, basicFilled });
+    const meta = reasonMeta(reasonCode);
+    tasks.push({
+      channel: c.key,
+      channelLabel: CHANNEL_LABEL[c.key] || c.key,
+      status,
+      reasonCode,
+      reasonLabel: status === 'ok' ? '成功' : meta.label,
+      category: status === 'ok' ? null : meta.category,
+      hint: status === 'ok' ? null : meta.hint,
+      costMs,
+      err: errMsg,
+      mode,
+      basicFilled,
+    });
   }
 
   // 系统设置：采集后自动重算（失败不阻断采集结果返回）
@@ -227,7 +269,69 @@ export async function collectPartner(partnerId) {
     }
   }
 
-  return { partnerId, tasks, scored, scoreError };
+  // 结果摘要：只汇总「实际参与本次采集」的渠道。
+  // 未启用的渠道（如没配 Key 的企查查）属于预期不参与，不列出、不计失败，避免误导成报错。
+  const active = tasks.filter((t) => t.status !== 'skipped');
+  const skippedCount = tasks.length - active.length;
+
+  const okCount = active.filter((t) => t.status === 'ok').length;
+  const failed = active.filter((t) => t.status === 'error' || t.status === 'mismatch').length;
+
+  const byCategory = {};
+  for (const t of active) {
+    if (t.status === 'ok') continue;
+    const cat = t.category || 'unknown';
+    (byCategory[cat] ||= []).push(CHANNEL_LABEL[t.channel] || t.channel);
+  }
+
+  const summary =
+    active
+      .map((t) => {
+        const label = CHANNEL_LABEL[t.channel] || t.channel;
+        return t.status === 'ok' ? `${label} 成功` : `${label} ${t.reasonLabel}`;
+      })
+      .join('；') || '本次没有启用的采集渠道';
+
+  const detail = active
+    .filter((t) => t.status !== 'ok')
+    .map((t) => {
+      const label = CHANNEL_LABEL[t.channel] || t.channel;
+      const raw = String(t.err || t.hint || '无返回');
+      // 错误文案常以渠道名开头，避免“天眼查：天眼查返回错误…”重复
+      const text = raw.startsWith(label) ? raw.slice(label.length).trim() : raw;
+      return `${label}（${CATEGORY_LABEL[t.category] || '未知'}）：${text}`;
+    })
+    .join('；');
+
+  // 按“最该先处理”的顺序给一句行动建议
+  const ADVICE_ORDER = ['billing', 'quota', 'entitlement', 'config', 'network', 'data', 'code', 'api', 'unknown'];
+  const ADVICE = {
+    billing: '账户余额不足 → 需到开放平台充值，不是系统问题',
+    quota: '本地日额度用尽 → 可在「系统设置 → 数据渠道」上调日调用/日成本上限',
+    entitlement: '接口未开通 → 需在开放平台购买/开通对应接口',
+    config: '配置问题 → 检查 API Key、渠道开关与鉴权头（裸 token，不带 Bearer）',
+    network: '网络/超时 → 稍后重试，或检查本机网络与代理',
+    data: '数据问题 → 客户档案缺字段或主体不一致，按明细补全/核对',
+    code: '系统问题 → 相关渠道 Connector 尚未实现，需开发补齐',
+    api: '渠道返回业务错误 → 见明细中的原始报文',
+    unknown: '原因未识别 → 见明细中的原始错误',
+  };
+  const firstCat = ADVICE_ORDER.find((c) => byCategory[c]?.length);
+  const advice = firstCat ? ADVICE[firstCat] : null;
+
+  return {
+    partnerId,
+    tasks,
+    summary,
+    detail,
+    advice,
+    byCategory,
+    okCount,
+    failed,
+    skippedCount,
+    scored,
+    scoreError,
+  };
 }
 
 export async function listFetchTasks(partnerId) {
@@ -246,8 +350,15 @@ export async function getCollectSummary(partnerId) {
   return { total: items.reduce((s, x) => s + x.count, 0), items };
 }
 
+// 只返回有案号的司法记录：无案号的历史 AI 推断（2026-10 之前写入）不参与评分，也不展示。
+// 数据仍在表里可追溯，需要彻底清理时按 data_source='ai' AND case_no='' 单独处理。
 export async function getJudicial(partnerId) {
-  return db.all('SELECT * FROM partner_judicial WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
+  return db.all(
+    `SELECT * FROM partner_judicial
+      WHERE partner_id = ? AND IFNULL(case_no, '') <> ''
+      ORDER BY id DESC`,
+    [partnerId],
+  );
 }
 
 export async function getCredit(partnerId) {
@@ -328,6 +439,11 @@ export async function listDimension(kind, partnerId) {
 
 export async function createDimension(kind, partnerId, item = {}) {
   const def = dimDef(kind);
+  // 硬约束：司法记录必须有案号。没有案号既无法核验真伪，也无法与后续天眼查司法接口对齐，
+  // 一律不予落库（AI 路径在 ai-service 已先过滤，这里兜住手工录入）。
+  if (kind === 'judicial' && !String(item.caseNo || '').trim()) {
+    throw new Error('司法记录必须填写案号，否则不予记录');
+  }
   const { cols, params } = pickColumns(def, item);
   const source = ['manual', 'channel', 'ai', 'demo'].includes(item.dataSource) ? item.dataSource : 'manual';
   const allCols = ['partner_id', ...cols, 'fetched_at', 'data_source'];

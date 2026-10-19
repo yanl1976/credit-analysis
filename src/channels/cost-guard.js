@@ -1,6 +1,7 @@
 // 渠道调用成本护栏：日调用次数 / 日金额上限 + 结果缓存。
 // 按次计费的接口（天眼查/企查查）一旦被批量导入循环调用，几分钟就能烧掉几百元，必须在调用前拦截。
 // 说明：计数与缓存均为进程内状态，重启归零；原始响应另由 partner_raw 持久化留档。
+import { REASON } from './error-codes.js';
 
 const usage = new Map(); // channel -> { day, calls, cost }
 const cache = new Map(); // `${channel}:${key}` -> { expire, value }
@@ -35,8 +36,21 @@ export function reserveCall(channel, unitCost = 0, limits = {}) {
   const e = entryOf(channel);
   const maxCalls = Number(limits.maxCalls ?? 200);
   const maxCost = Number(limits.maxCost ?? 50);
-  if (e.calls + 1 > maxCalls) return { ok: false, reason: `已达日调用上限（${maxCalls} 次），请调整 CHANNEL_DAILY_MAX_CALLS` };
-  if (e.cost + unitCost > maxCost) return { ok: false, reason: `已达日成本上限（¥${maxCost}），请调整 CHANNEL_DAILY_MAX_COST` };
+  // 注意：这里是"本地预算"拦截，与开放平台账户余额是两回事，必须给不同 reasonCode
+  if (e.calls + 1 > maxCalls) {
+    return {
+      ok: false,
+      reasonCode: REASON.LOCAL_QUOTA,
+      reason: `已达本系统日调用上限（今日 ${e.calls}/${maxCalls} 次），请求未发出`,
+    };
+  }
+  if (e.cost + unitCost > maxCost) {
+    return {
+      ok: false,
+      reasonCode: REASON.LOCAL_QUOTA,
+      reason: `已达本系统日成本上限（今日 ¥${e.cost.toFixed(2)}/¥${maxCost}），请求未发出`,
+    };
+  }
   e.calls += 1;
   e.cost += Number(unitCost) || 0;
   return { ok: true };

@@ -3,6 +3,7 @@ import { getSearchStatus, searchMany, formatEvidence } from '../services/web-sea
 import { chat } from '../services/llm-client.js';
 import { matchCompany, normalizeCompanyName, normalizeCreditCodeLoose, searchableName } from './entity-match.js';
 import { reserveCall, getBudget, cacheGet, cacheSet } from './cost-guard.js';
+import { REASON, tycReasonOf, reasonOfException } from './error-codes.js';
 
 // 天眼查 Connector · 双模式
 // 1) api    ：配置 TIAN_YAN_CHA_API_KEY 后走开放平台（结构化、按次计费，需账号）
@@ -82,10 +83,16 @@ function describeApiError(code, reason) {
 
 // 兼容天眼查开放平台的两种包裹形态
 function unwrapPayload(payload) {
-  if (!payload || typeof payload !== 'object') return { ok: false, reason: '返回为空' };
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, reason: '返回为空', reasonCode: REASON.API_ERROR };
+  }
   const code = payload.error_code ?? payload.code;
   if (code !== undefined && Number(code) !== 0) {
-    return { ok: false, reason: `天眼查返回错误 ${describeApiError(code, payload.reason || payload.message)}` };
+    return {
+      ok: false,
+      reason: `天眼查返回错误 ${describeApiError(code, payload.reason || payload.message)}`,
+      reasonCode: tycReasonOf(code),
+    };
   }
   const data = payload.result ?? payload.data ?? payload;
   return { ok: true, data };
@@ -231,7 +238,9 @@ const RISK_APIS = [
 
 export class TianyanchaConnector extends BaseConnector {
   constructor(cfg = {}) {
-    super({ ...cfg, requiresAuth: false, capabilities: ['basic', 'judicial', 'credit', 'finance'] });
+    // 当前账号实际可用的能力：主体核验（三要素）+ 合规类（经营异常/行政处罚/严重违法等）。
+    // 司法、财务类接口未开通，故不声明，避免状态页给人"能查司法"的错觉。
+    super({ ...cfg, requiresAuth: false, capabilities: ['verify', 'credit'] });
     this.cfg = cfg;
     this.apiKey = cfg.apiKey || '';
     this.mode = this.#resolveMode();
@@ -249,9 +258,15 @@ export class TianyanchaConnector extends BaseConnector {
   }
 
   budgetLimits() {
+    // 注意用 ?? 而非 ||：上限设为 0（等于封停）是合法配置，不能被 || 悄悄替换成默认值
+    const pick = (v, fallback) => {
+      if (v === undefined || v === null || v === '') return fallback;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
     return {
-      maxCalls: Number(this.cfg.dailyMaxCalls || process.env.CHANNEL_DAILY_MAX_CALLS || 200),
-      maxCost: Number(this.cfg.dailyMaxCost || process.env.CHANNEL_DAILY_MAX_COST || 50),
+      maxCalls: pick(this.cfg.dailyMaxCalls ?? process.env.CHANNEL_DAILY_MAX_CALLS, 200),
+      maxCost: pick(this.cfg.dailyMaxCost ?? process.env.CHANNEL_DAILY_MAX_COST, 50),
     };
   }
 
@@ -289,10 +304,16 @@ export class TianyanchaConnector extends BaseConnector {
   // 统一入口：query 可以是信用代码，也可以是企业名称
   async query(query, partner = null) {
     if (!this.isConfigured()) {
-      return { ok: false, reason: this.mode === 'off' ? '未配置天眼查 API Key，且无可用的公开检索通道' : '渠道未启用' };
+      return {
+        ok: false,
+        reasonCode: REASON.NOT_CONFIGURED,
+        reason: this.mode === 'off' ? '未配置天眼查 API Key，且无可用的公开检索通道' : '渠道未启用',
+      };
     }
     const rawQuery = String(query || partner?.name || '').trim();
-    if (!rawQuery) return { ok: false, reason: '缺少查询关键字（信用代码或企业名称）' };
+    if (!rawQuery) {
+      return { ok: false, reasonCode: REASON.MISSING_INPUT, reason: '缺少查询关键字（信用代码或企业名称）' };
+    }
 
     const target = {
       creditCode: partner?.credit_code || (CREDIT_CODE_RE.test(rawQuery) ? rawQuery : null),
@@ -306,14 +327,26 @@ export class TianyanchaConnector extends BaseConnector {
     if (cached) return { ...cached, meta: { ...cached.meta, cached: true } };
 
     const reserved = reserveCall(this.key, this.unitCost(), this.budgetLimits());
-    if (!reserved.ok) return { ok: false, reason: reserved.reason, budget: getBudget(this.key, this.budgetLimits()) };
+    if (!reserved.ok) {
+      return {
+        ok: false,
+        reasonCode: reserved.reasonCode || REASON.LOCAL_QUOTA,
+        reason: reserved.reason,
+        budget: getBudget(this.key, this.budgetLimits()),
+      };
+    }
 
     try {
       const result = this.mode === 'api' ? await this.queryByApi(rawQuery, target) : await this.queryBySearch(rawQuery, target);
       if (result.ok) cacheSet(cacheKey, result, Number(this.cfg.cacheTtlMs || process.env.CHANNEL_CACHE_TTL_MS || 86400000));
       return result;
     } catch (e) {
-      return { ok: false, reason: `天眼查查询失败：${e.message}`, mode: this.mode };
+      return {
+        ok: false,
+        reasonCode: reasonOfException(e),
+        reason: `天眼查查询失败：${e.message}`,
+        mode: this.mode,
+      };
     }
   }
 
@@ -334,21 +367,38 @@ export class TianyanchaConnector extends BaseConnector {
     });
     const text = await resp.text();
     if (!resp.ok) {
-      return { ok: false, reason: `天眼查接口 ${resp.status}：${text.slice(0, 200).replace(/\s+/g, ' ')}`, mode: 'api' };
+      return {
+        ok: false,
+        mode: 'api',
+        reasonCode: resp.status === 401 || resp.status === 403 ? REASON.AUTH_FAILED : REASON.API_ERROR,
+        reason: `天眼查接口 HTTP ${resp.status}：${text.slice(0, 200).replace(/\s+/g, ' ')}`,
+      };
     }
     let payload;
     try {
       payload = JSON.parse(text);
     } catch {
-      return { ok: false, reason: `天眼查返回非 JSON：${text.slice(0, 200)}`, mode: 'api' };
+      return {
+        ok: false,
+        mode: 'api',
+        reasonCode: REASON.API_ERROR,
+        reason: `天眼查返回非 JSON：${text.slice(0, 200)}`,
+      };
     }
     const un = unwrapPayload(payload);
-    if (!un.ok) return { ok: false, reason: un.reason, mode: 'api', raw: payload };
+    if (!un.ok) return { ok: false, mode: 'api', reasonCode: un.reasonCode, reason: un.reason, raw: payload };
 
     const basic = normalizeBasic(un.data || {});
     const match = matchCompany(target, basic);
     if (!match.matched) {
-      return { ok: false, reason: `主体校验未通过：${match.reason}`, mode: 'api', meta: { match }, raw: payload };
+      return {
+        ok: false,
+        mode: 'api',
+        reasonCode: REASON.MISMATCH,
+        reason: `主体校验未通过：${match.reason}`,
+        meta: { match },
+        raw: payload,
+      };
     }
 
     return this.attachRiskApis(
@@ -387,18 +437,33 @@ export class TianyanchaConnector extends BaseConnector {
     });
     const text = await resp.text();
     if (!resp.ok) {
-      return { ok: false, reason: `HTTP ${resp.status}：${text.slice(0, 160).replace(/\s+/g, ' ')}` };
+      return {
+        ok: false,
+        reasonCode: resp.status === 401 || resp.status === 403 ? REASON.AUTH_FAILED : REASON.API_ERROR,
+        reason: `HTTP ${resp.status}：${text.slice(0, 160).replace(/\s+/g, ' ')}`,
+      };
     }
     let payload;
     try {
       payload = JSON.parse(text);
     } catch {
-      return { ok: false, reason: `返回非 JSON：${text.slice(0, 160).replace(/\s+/g, ' ')}` };
+      return {
+        ok: false,
+        reasonCode: REASON.API_ERROR,
+        reason: `返回非 JSON：${text.slice(0, 160).replace(/\s+/g, ' ')}`,
+      };
     }
     const code = payload.error_code ?? payload.code;
     if (code !== undefined && Number(code) !== 0) {
+      // 账号级问题：未开通/欠费/鉴权失效 → 后续接口不必再试
       const fatal = [300005, 300006, 300009].includes(Number(code));
-      return { ok: false, reason: describeApiError(code, payload.reason || payload.message), fatal, raw: payload };
+      return {
+        ok: false,
+        reasonCode: tycReasonOf(code),
+        reason: describeApiError(code, payload.reason || payload.message),
+        fatal,
+        raw: payload,
+      };
     }
     return { ok: true, data: payload.result ?? payload.data ?? {}, raw: payload };
   }
@@ -421,7 +486,7 @@ export class TianyanchaConnector extends BaseConnector {
     for (const api of RISK_APIS) {
       const reserved = reserveCall(this.key, this.unitCost(), this.budgetLimits());
       if (!reserved.ok) {
-        aborted = reserved.reason;
+        aborted = { reason: reserved.reason, reasonCode: reserved.reasonCode || REASON.LOCAL_QUOTA };
         break;
       }
       calls++;
@@ -436,13 +501,19 @@ export class TianyanchaConnector extends BaseConnector {
       try {
         r = await this.getJson(base, api.path, params);
       } catch (e) {
-        r = { ok: false, reason: e.message };
+        r = { ok: false, reason: e.message, reasonCode: reasonOfException(e) };
       }
 
       if (!r.ok) {
-        sources.push({ id: api.id, label: api.label, ok: false, reason: r.reason });
+        sources.push({
+          id: api.id,
+          label: api.label,
+          ok: false,
+          reasonCode: r.reasonCode || REASON.API_ERROR,
+          reason: r.reason,
+        });
         if (r.fatal) {
-          aborted = r.reason;
+          aborted = { reason: r.reason, reasonCode: r.reasonCode || REASON.API_ERROR };
           break;
         }
         continue;
@@ -510,6 +581,7 @@ export class TianyanchaConnector extends BaseConnector {
       return {
         ok: false,
         mode: 'api',
+        reasonCode: REASON.MISSING_INPUT,
         reason: `核验需要${missing.join('、')}；请补全客户档案后重试`,
       };
     }
@@ -521,24 +593,35 @@ export class TianyanchaConnector extends BaseConnector {
     });
     const text = await resp.text();
     if (!resp.ok) {
-      return { ok: false, reason: `天眼查接口 ${resp.status}：${text.slice(0, 200).replace(/\s+/g, ' ')}`, mode: 'api' };
+      return {
+        ok: false,
+        mode: 'api',
+        reasonCode: resp.status === 401 || resp.status === 403 ? REASON.AUTH_FAILED : REASON.API_ERROR,
+        reason: `天眼查接口 HTTP ${resp.status}：${text.slice(0, 200).replace(/\s+/g, ' ')}`,
+      };
     }
 
     let payload;
     try {
       payload = JSON.parse(text);
     } catch {
-      return { ok: false, reason: `天眼查返回非 JSON：${text.slice(0, 200)}`, mode: 'api' };
+      return {
+        ok: false,
+        mode: 'api',
+        reasonCode: REASON.API_ERROR,
+        reason: `天眼查返回非 JSON：${text.slice(0, 200)}`,
+      };
     }
 
     const un = unwrapPayload(payload);
-    if (!un.ok) return { ok: false, reason: un.reason, mode: 'api', raw: payload };
+    if (!un.ok) return { ok: false, mode: 'api', reasonCode: un.reasonCode, reason: un.reason, raw: payload };
 
     const verify = parseVerifyResult(un.data);
     if (verify.consistent === false) {
       return {
         ok: false,
         mode: 'api',
+        reasonCode: REASON.MISMATCH,
         reason: `三要素核验不一致：${name} / ${code} / ${legalPersonName}`,
         meta: { match: { matched: false, reason: '名称/代码/法人三要素不一致' }, verify },
         raw: payload,

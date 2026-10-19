@@ -2,8 +2,6 @@ import { channels as channelConfig } from '../../config/channels.js';
 import { registerConnector, clearRegistry } from './registry.js';
 import { QccConnector } from './qcc-connector.js';
 import { TianyanchaConnector } from './tianyancha-connector.js';
-import { CreditChinaConnector } from './credit-china-connector.js';
-import { ZhixingConnector } from './zhixing-connector.js';
 import { getChannelSettings } from '../services/setting-service.js';
 
 let initialized = false;
@@ -41,10 +39,10 @@ export async function initChannels() {
     // 表未就绪或读取失败时退回 .env 配置，不阻断启动
     saved = {};
   }
+  // 只保留两个商业数据源；公开渠道（信用中国/执行信息公开网）已剔除，
+  // 司法与经营风险数据统一由天眼查开放平台提供（见 config/channels.js 注释）
   registerConnector(new QccConnector(channelConfig.qcc));
   registerConnector(new TianyanchaConnector(mergeTianyancha(channelConfig.tianyancha, saved)));
-  registerConnector(new CreditChinaConnector(channelConfig.creditChina));
-  registerConnector(new ZhixingConnector(channelConfig.zhixing));
   initialized = true;
 }
 
