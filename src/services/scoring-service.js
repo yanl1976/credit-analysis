@@ -47,8 +47,12 @@ export async function calculateScore(partnerId) {
     }
   }
 
+  // 仅统计「诉讼」类被告未结案件：执行/失信/破产/限高已在上面按被执行与否决口径计过，避免重复扣分
   const defendantOpen = judicial.filter(
-    (j) => (j.party_role || '').includes('被告') && (j.status || '') !== '已结',
+    (j) =>
+      (j.party_role || '').includes('被告') &&
+      (j.status || '') !== '已结' &&
+      !/执行|失信|破产|限高/.test(j.case_type || ''),
   );
   if (defendantOpen.length) {
     const delta = Math.max(
@@ -110,6 +114,13 @@ export async function calculateScore(partnerId) {
   // 5) 舆情：暂无数据源，保留权重
 
   score = Math.max(0, Math.min(100, score));
+
+  // 一票否决：分数封顶（避免出现「95 分 / D 级」的矛盾展示）
+  if (veto && score > R.vetoScoreCap) {
+    const capDelta = R.vetoScoreCap - score;
+    score = R.vetoScoreCap;
+    push(reasons, capDelta, '否决', `一票否决：评分封顶 ${R.vetoScoreCap} 分`);
+  }
 
   let grade = 'D';
   let riskLevel = '极高';

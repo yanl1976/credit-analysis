@@ -11,8 +11,14 @@ const routes = [
   {
     path: '/',
     component: () => import('../layouts/AppLayout.vue'),
-    redirect: '/partners',
+    redirect: '/dashboard',
     children: [
+      {
+        path: 'dashboard',
+        name: 'dashboard',
+        component: () => import('../views/DashboardView.vue'),
+        meta: { title: '概览看板' },
+      },
       {
         path: 'partners',
         name: 'partners',
@@ -44,7 +50,7 @@ const router = createRouter({
 router.beforeEach((to) => {
   const logged = !!getToken();
   if (!to.meta.public && !logged) return { name: 'login', query: { redirect: to.fullPath } };
-  if (to.name === 'login' && logged) return { name: 'partners' };
+  if (to.name === 'login' && logged) return { name: 'dashboard' };
   document.title = to.meta.title ? `${to.meta.title} · 合作方资信分析系统` : '合作方资信分析系统';
   return true;
 });

@@ -31,3 +31,7 @@ export const riskApi = {
 export const orgApi = {
   list: () => http.get('/orgs'),
 };
+
+export const dashboardApi = {
+  overview: () => http.get('/dashboard/overview'),
+};

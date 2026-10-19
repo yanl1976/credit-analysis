@@ -46,7 +46,7 @@ async function handleLogin() {
   try {
     await auth.login(form.username.trim(), form.password);
     ElMessage.success('登录成功');
-    router.replace(route.query.redirect || '/partners');
+    router.replace(route.query.redirect || '/dashboard');
   } catch {
     // 拦截器已提示
   } finally {

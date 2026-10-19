@@ -3,6 +3,7 @@
     <el-aside width="200px" class="aside">
       <div class="brand">合作方资信分析</div>
       <el-menu :default-active="activeMenu" router class="menu">
+        <el-menu-item index="/dashboard">概览看板</el-menu-item>
         <el-menu-item index="/partners">客户管理</el-menu-item>
         <el-menu-item index="/risk-center">预警中心</el-menu-item>
       </el-menu>
@@ -31,7 +32,10 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
 
-const activeMenu = computed(() => (route.path.startsWith('/partners') ? '/partners' : route.path));
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/partners')) return '/partners';
+  return route.path;
+});
 
 function handleLogout() {
   auth.logout();

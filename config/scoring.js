@@ -1,6 +1,7 @@
 // 评分卡配置（V1）：扣分制，baseScore=100 起扣；权重用于维度展示与后续加权扩展。
 // 调整规则/阈值时请同步升级 SCORING_VERSION，便于历史评分回溯。
-export const SCORING_VERSION = 'v1.0';
+// v1.1：一票否决分数封顶（vetoScoreCap）+ 被告未结诉讼排除执行类案由（防重复扣分）
+export const SCORING_VERSION = 'v1.1';
 
 export const SCORING_RULES = {
   version: SCORING_VERSION,
@@ -15,11 +16,14 @@ export const SCORING_RULES = {
     sentiment: 5,
   },
 
-  // 一票否决：命中即 grade=D / riskLevel=极高
+  // 一票否决：命中即 grade=D / riskLevel=极高，且分数封顶（见 vetoScoreCap）
   veto: {
     judicialCaseTypes: ['失信', '破产', '限高'],
     regStatuses: ['吊销', '注销'],
   },
+
+  // 否决客户的评分上限（技术方案 5.3「评分封顶」落地值）
+  vetoScoreCap: 25,
 
   // 扣分明细
   deductions: {
