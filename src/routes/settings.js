@@ -5,6 +5,7 @@ import {
   getPublicSettings,
 } from '../services/setting-service.js';
 import { listStatuses } from '../channels/registry.js';
+import { reloadChannels } from '../channels/index.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePerm } from '../middleware/permission.js';
 
@@ -31,13 +32,20 @@ router.get('/', authenticate, requirePerm('system:manage'), async (req, res, nex
 router.put('/', authenticate, requirePerm('system:manage'), async (req, res, next) => {
   try {
     const values = req.body?.values || req.body || {};
-    res.json({ code: 0, data: await saveSettings(values) });
+    await saveSettings(values);
+
+    // 渠道参数改动后热重载，避免"保存了但要重启才生效"
+    if (Object.keys(values).some((k) => k.startsWith('channel.'))) {
+      await reloadChannels();
+    }
+
+    res.json({ code: 0, data: await listGroupedSettings() });
   } catch (e) {
     next(e);
   }
 });
 
-// 渠道配置状态（不含 Key；Key 通过 .env 配置）
+// 渠道配置状态（不返回 Key 明文）
 router.get('/channels', authenticate, requirePerm('system:manage'), async (req, res, next) => {
   try {
     const channels = listStatuses();
@@ -46,7 +54,7 @@ router.get('/channels', authenticate, requirePerm('system:manage'), async (req, 
       data: {
         channels,
         enabledCount: channels.filter((c) => c.configured).length,
-        note: '渠道开关与 API Key 通过 .env（QCC_API_KEY / TIAN_YAN_CHA_API_KEY）配置，前端仅展示状态与能力。',
+        note: '渠道开关、API Key 与预算可在上方「数据渠道」分组中配置，保存后立即生效；.env 中的同名配置作为兜底默认值。',
       },
     });
   } catch (e) {

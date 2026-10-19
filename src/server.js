@@ -51,7 +51,7 @@ app.use((err, req, res, next) => {
 (async () => {
   try {
     await createTables();
-    initChannels();
+    await initChannels();
     app.listen(appConfig.port, () => {
       console.log(`[server] 合作方资信分析系统已启动: http://localhost:${appConfig.port} (db: ${db.engine})`);
     });

@@ -110,8 +110,21 @@
                   v-model="settingForm[item.key]"
                   :min="item.min"
                   :max="item.max"
-                  :step="1"
+                  :precision="item.decimals || 0"
+                  :step="item.decimals ? 0.05 : 1"
                 />
+                <template v-else-if="item.secret">
+                  <el-input
+                    v-model="settingForm[item.key]"
+                    type="password"
+                    show-password
+                    :maxlength="item.maxLength || 200"
+                    :placeholder="item.hasValue ? '已配置，留空表示不修改' : '未配置'"
+                    style="width: 260px"
+                  />
+                  <el-button v-if="item.hasValue" link type="danger" class="ml8" @click="clearSecret(item)">清除</el-button>
+                  <el-tag v-if="item.hasValue" size="small" type="success" class="ml8">已配置</el-tag>
+                </template>
                 <el-input v-else v-model="settingForm[item.key]" :maxlength="item.maxLength || 60" style="width: 260px" />
               </div>
             </div>
@@ -132,6 +145,18 @@
                 <el-tag size="small" :type="row.configured ? 'success' : 'info'">
                   {{ row.configured ? '已启用' : '未配置' }}
                 </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="模式" width="200">
+              <template #default="{ row }">
+                <el-tag
+                  v-if="row.mode"
+                  size="small"
+                  :type="row.mode === 'api' ? 'success' : row.mode === 'search' ? 'warning' : 'info'"
+                >
+                  {{ row.modeLabel || row.mode }}
+                </el-tag>
+                <span v-else class="muted">—</span>
               </template>
             </el-table-column>
             <el-table-column label="需鉴权" width="90">
@@ -318,13 +343,22 @@ async function loadSettings() {
   channelNote.value = c.note || '';
 }
 
+// 密钥项：清空输入 = 不修改；点「清除」提交该标记由后端删除
+const SECRET_CLEAR = '__CLEAR__';
+
+function clearSecret(item) {
+  settingForm[item.key] = SECRET_CLEAR;
+  ElMessage.info(`「${item.label}」将在保存后清除`);
+}
+
 async function saveSettings() {
   savingSettings.value = true;
   try {
     const values = {};
     for (const g of settingGroups.value) for (const it of g.items) values[it.key] = settingForm[it.key];
-    settingGroups.value = (await settingApi.save(values)) || settingGroups.value;
-    ElMessage.success('设置已保存');
+    await settingApi.save(values);
+    await loadSettings(); // 重新拉设置（密钥回到掩码态）并刷新渠道状态
+    ElMessage.success('设置已保存，渠道配置已即时生效');
   } finally {
     savingSettings.value = false;
   }
