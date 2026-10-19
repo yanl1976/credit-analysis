@@ -1,7 +1,7 @@
 import db from '../config/database.js';
 
 // 方言无关建表：sqlite3 / pg / mysql2 均由 Knex 适配，业务代码不写特定 SQL
-async function createTables() {
+export async function createTables() {
   await db.schema.createTableIfNotExists('org', (t) => {
     t.increments('id');
     t.integer('parent_id').notNullable().defaultTo(0); // 0 = 根
