@@ -4,6 +4,9 @@ import db from './db.js';
 import { appConfig } from '../config/app.js';
 import { createTables } from './migrate.js';
 import orgRoutes from './routes/org.js';
+import userRoutes from './routes/user.js';
+import roleRoutes from './routes/role.js';
+import permissionRoutes from './routes/permission.js';
 
 const app = express();
 app.use(express.json());
@@ -20,6 +23,9 @@ app.get('/health', async (req, res) => {
 
 // 业务路由
 app.use('/api/orgs', orgRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/roles', roleRoutes);
+app.use('/api/permissions', permissionRoutes);
 
 // 统一错误处理（放在所有路由之后）
 app.use((err, req, res, next) => {
