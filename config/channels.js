@@ -39,6 +39,17 @@ export const channels = {
     dailyMaxCalls: Number(process.env.CHANNEL_DAILY_MAX_CALLS || 200),
     dailyMaxCost: Number(process.env.CHANNEL_DAILY_MAX_COST || 50),
   },
+  // 天眼AI（官方 MCP 服务）：面向 AI 助手的 162 个企业数据工具，免费注册、Bearer 鉴权
+  // 与上面的开放平台 API（按次计费、需逐接口开通）是两条独立通道，可并存
+  tianyanchaMcp: {
+    key: 'tianyanchaMcp',
+    name: '天眼AI(MCP)',
+    enabled: Boolean(process.env.TIANYANCHA_MCP_TOKEN),
+    endpoint: process.env.TIANYANCHA_MCP_URL || 'https://mcp.tianyancha.com/v1',
+    token: process.env.TIANYANCHA_MCP_TOKEN || '',
+    timeoutMs: Number(process.env.TIANYANCHA_MCP_TIMEOUT_MS || 30000),
+  },
+
   // 已移除：信用中国 / 执行信息公开网
   // 原因：两站均启用验证码 + WAF，自动采集不可行；绕验证码既不稳也不合规。
   // 决策（2026-10-19）：这两个渠道不再注册，主体信息与经营风险统一由天眼查开放平台获取。

@@ -134,7 +134,16 @@ const COLLECT_SYSTEM = `你是企业风险信息核查助手，为企业风控�
 4. 每条记录必须给出 confidence（high/medium/low）与 basis（依据说明，尽量引用证据 URL）；
 5. **司法类（judicial）每条必须有可核验的案号**（形如 (2023)甘05民初123号 / (2024)甘05执456号）。
    没有案号的传闻、概括性描述（如"存在多起合同纠纷"）一律不要输出；严禁凭空编造案号——
-   无案号的条目会被系统直接丢弃，编造案号比不输出更严重。`;
+   无案号的条目会被系统直接丢弃，编造案号比不输出更严重；
+6. **财务线索的取数口径**：若该企业本身是上市公司，或其母公司/控股股东为上市公司
+   （含"XX股份有限公司"控股的子公司），财务线索必须优先采用**公开披露的财报数据**，
+   来源写明站点（东方财富 / 巨潮资讯 / 新浪财经 / 上交所深交所公告），
+   同时给出 stockCode（股票代码）、reportPeriod（报告期，如 2025-12-31）、
+   listedStatus（本公司上市 / 母公司上市）；数字必须与披露值一致，不得估算或推算；
+   拿不到具体数字时，可只给来源与报告期，数值留 null。
+   **不得凭印象判断一家企业"是不是上市公司"**——无法确认就留空，不要下"非上市公司"这类结论；
+7. 信用/合规类（credit）必须给出具体事由或作出机关或日期三者之一，只有类型名的空壳记录不要输出；
+   财务类（finance）必须给出可追溯来源（站点/公告）且至少一个具体数值，否则不要输出。`;
 
 // onProgress(百分比, 步骤文案)：供异步任务把进度回传前端进度条
 export async function aiCollect(partnerId, onProgress = () => {}) {
@@ -181,7 +190,7 @@ ${evidenceBlock}
     {"itemType":"行政处罚|经营异常|严重违法失信|税收违法","authority":"作出机关或 null","reason":"事由或 null","penalty":"处罚内容或 null","date":"YYYY-MM-DD 或 null","confidence":"high/medium/low","basis":"依据说明"}
   ],
   "finance": [
-    {"src":"数据来源或 null","scaleTag":"大型|中型|小型|微型|小微企业|个体工商户 或 null","revYoy":"营收同比或 null","profit":"利润或 null","employeeCnt":数字或 null,"confidence":"high/medium/low","basis":"依据说明"}
+    {"src":"数据来源（如 东方财富/巨潮资讯/新浪财经/年报）或 null","stockCode":"股票代码或 null","reportPeriod":"报告期如 2025-12-31 或 null","listedStatus":"本公司上市|母公司上市|未上市 或 null","scaleTag":"大型|中型|小型|微型|小微企业|个体工商户 或 null","revYoy":"营收同比或 null","profit":"利润或 null","employeeCnt":数字或 null,"confidence":"high/medium/low","basis":"依据说明"}
   ],
   "disclaimer": "总体说明与不确定性提示"
 }
@@ -207,7 +216,16 @@ ${evidenceBlock}
     content: res.content,
   });
 
-  const added = { judicial: 0, credit: 0, finance: 0, skipped: 0, noCaseNo: 0 };
+  const added = {
+    judicial: 0,
+    credit: 0,
+    finance: 0,
+    skipped: 0,
+    noCaseNo: 0,
+    emptyCredit: 0,
+    noFinanceSrc: 0,
+    emptyFinance: 0,
+  };
   const inserted = [];
   report(84, '写入检索结果（自动去重）');
 
@@ -252,6 +270,11 @@ ${evidenceBlock}
       date: cleanDate(it.date),
     };
     if (!item.itemType) continue;
+    // 空壳记录（只有类型，无事由/机关/日期）没有核验价值，且会按条数扣分，直接丢弃
+    if (!item.reason && !item.authority && !item.date) {
+      added.emptyCredit = (added.emptyCredit || 0) + 1;
+      continue;
+    }
     if (await existsSimilar('credit', partner.id, item)) {
       added.skipped++;
       continue;
@@ -268,13 +291,26 @@ ${evidenceBlock}
   const finance = (Array.isArray(json.finance) ? json.finance : []).slice(0, MAX_ITEMS_PER_KIND);
   for (const it of finance) {
     const item = {
-      src: cleanStr(it.src, 32),
+      src: cleanStr(it.src, 64),
+      // 上市公司口径：股票代码 / 报告期 / 上市关系（本公司上市、母公司上市）
+      stockCode: cleanStr(it.stockCode, 16),
+      reportPeriod: cleanStr(it.reportPeriod, 16),
+      listedStatus: cleanStr(it.listedStatus, 16),
       scaleTag: cleanStr(it.scaleTag, 32),
       revYoy: cleanStr(it.revYoy, 32),
       profit: cleanStr(it.profit, 32),
       employeeCnt: cleanAmount(it.employeeCnt),
     };
-    if (!item.scaleTag && !item.src) continue;
+    // 财务线索必须可追溯：无来源站点且无股票代码的，一律不记录（不接受"据说营收多少"）
+    if (!item.src && !item.stockCode) {
+      added.noFinanceSrc = (added.noFinanceSrc || 0) + 1;
+      continue;
+    }
+    // 有来源但没有任何具体数值的，同样没有信息量
+    if (!item.scaleTag && !item.revYoy && !item.profit && item.employeeCnt === null) {
+      added.emptyFinance = (added.emptyFinance || 0) + 1;
+      continue;
+    }
     if (await existsSimilar('finance', partner.id, item)) {
       added.skipped++;
       continue;
@@ -282,7 +318,12 @@ ${evidenceBlock}
     const row = await createDimension('finance', partner.id, {
       ...item,
       dataSource: 'ai',
-      detail: { ai: true, confidence: normConfidence(it.confidence), basis: cleanStr(it.basis, 200), model: res.model },
+      detail: {
+        ai: true,
+        confidence: normConfidence(it.confidence),
+        basis: cleanStr(it.basis, 200),
+        model: res.model,
+      },
     });
     inserted.push({ kind: 'finance', id: row.id });
     added.finance++;

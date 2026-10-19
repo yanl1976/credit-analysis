@@ -1,6 +1,7 @@
 import db from '../db.js';
 import { getPartner } from './partner-service.js';
 import { getJudicial, getCredit, getFinance } from './collect-service.js';
+import { getTycRiskMetrics } from './tyc-service.js';
 import { SCORING_RULES } from '../../config/scoring.js';
 import { getSetting } from './setting-service.js';
 
@@ -10,15 +11,82 @@ function push(reasons, delta, category, reason) {
   reasons.push({ delta, category, reason });
 }
 
+const num = (v) => (v === null || v === undefined || v === '' ? 0 : Number(v));
+
+function parseJson(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// 取最近一期含结构化财报（detail_json.fiscal）的记录
+function latestFiscal(finance) {
+  const rows = (finance || [])
+    .map((f) => {
+      const detail = parseJson(f.detail_json);
+      return { period: String(f.report_period || ''), fiscal: detail && detail.fiscal };
+    })
+    .filter((x) => x.period && x.fiscal)
+    .sort((a, b) => (a.period < b.period ? 1 : a.period > b.period ? -1 : 0));
+  return rows[0] || null;
+}
+
+// 最近连续亏损年数（history 按年份倒序，遇到盈利即停止）
+function consecutiveLossYears(history) {
+  if (!Array.isArray(history) || !history.length) return 0;
+  const sorted = [...history].sort((a, b) => Number(b.year) - Number(a.year));
+  let n = 0;
+  for (const h of sorted) {
+    if (num(h.netProfit) < 0) n += 1;
+    else break;
+  }
+  return n;
+}
+
+// 由财报科目推导偿债指标（口径：EBIT=利润总额+利息费用；净资产为负时杠杆置为 Infinity）
+function computeFiscalMetrics(fiscal) {
+  const bs = fiscal.bs || {};
+  const is = fiscal.is || {};
+  const cf = fiscal.cf || {};
+  const totalAssets = num(bs.totalAssets);
+  const totalLiab = num(bs.totalLiab);
+  const equity = num(bs.equity);
+  const interestBearing =
+    num(bs.shortLoan) + num(bs.currentPortionLongDebt) + num(bs.longLoan) + num(bs.leaseLiab);
+  const interestExpense = num(is.interestExpense);
+  return {
+    period: fiscal.period || null,
+    debtRatio: totalAssets ? totalLiab / totalAssets : null,
+    currentRatio: num(bs.currentLiab) ? num(bs.currentAssets) / num(bs.currentLiab) : null,
+    interestCover: interestExpense ? (num(is.totalProfit) + interestExpense) / interestExpense : null,
+    debtToEquity: equity > 0 ? interestBearing / equity : equity < 0 ? Infinity : null,
+    netAssetsNegative: equity < 0,
+    lossYears: consecutiveLossYears(fiscal.history),
+    ocf: num(cf.netCashOperate),
+    interestBearing,
+    equity,
+    totalAssets,
+    totalLiab,
+  };
+}
+
+const pctText = (v) => (v === null ? '-' : `${(v * 100).toFixed(2)}%`);
+const xText = (v) => (v === null ? '-' : Number.isFinite(v) ? `${v.toFixed(2)}倍` : '净资产为负');
+
 // 评分计算：baseScore 起扣，命中一票否决直接 D/极高，reasons 输出可解释明细
 export async function calculateScore(partnerId) {
   const partner = await getPartner(partnerId);
   if (!partner) throw new Error('客户不存在');
 
-  const [judicial, credit, finance] = await Promise.all([
+  const [judicial, credit, finance, tyc] = await Promise.all([
     getJudicial(partnerId),
     getCredit(partnerId),
     getFinance(partnerId),
+    getTycRiskMetrics(partnerId),
   ]);
 
   const R = SCORING_RULES;
@@ -35,16 +103,20 @@ export async function calculateScore(partnerId) {
       push(reasons, 0, '司法', `一票否决：${caseType}（${j.case_no || '无案号'}）`);
       continue;
     }
-    if (caseType.includes('执行')) {
+    // 只有「本企业被执行」才扣分：作为申请执行人（原告/债权人）属于追偿行为，不是风险信号
+    const isExecuted = /被执行人/.test(j.party_role || '') || /被执行人/.test(caseType);
+    const isApplicant = /申请执行人/.test(j.party_role || '');
+    if (caseType.includes('执行') && isExecuted && !isApplicant) {
       let delta = D.judicial.executionPerCase;
       const amount = Number(j.amount || 0);
       const tier = D.judicial.executionAmountThresholds.find((t) => amount >= t.min);
+      let label = '被执行 1 条';
       if (tier) {
         delta += tier.delta;
-        push(reasons, tier.delta, '司法', `${tier.label}（${amount}元）`);
+        label = `被执行 1 条（${tier.label}，${amount} 元）`;
       }
       score += delta;
-      push(reasons, delta, '司法', '被执行 1 条');
+      push(reasons, delta, '司法', label);
     }
   }
 
@@ -62,6 +134,20 @@ export async function calculateScore(partnerId) {
     );
     score += delta;
     push(reasons, delta, '司法', `作为被告的未结诉讼 ${defendantOpen.length} 起`);
+  }
+
+  // 逐条明细不足以覆盖天眼AI 的「自身·立案信息」时，用聚合计数补足（明细齐全则不重复扣）
+  if (tyc && tyc.selfCases > judicial.length && D.judicial.riskOverview) {
+    const tier = D.judicial.riskOverview.tiers.find((t) => tyc.selfCases >= t.min);
+    if (tier) {
+      score += tier.delta;
+      push(
+        reasons,
+        tier.delta,
+        '司法',
+        `${tier.label}（天眼AI 风险总览聚合口径：自身立案 ${tyc.selfCases} 条 / 开庭 ${tyc.selfHearings} 条 / 裁判文书 ${tyc.selfJudgments} 条；本库仅 ${judicial.length} 条逐条明细，角色与金额未全部核实）`,
+      );
+    }
   }
 
   // 2) 合规
@@ -112,15 +198,109 @@ export async function calculateScore(partnerId) {
     push(reasons, D.finance.smallScale, '财务', '规模标签：小微/个体');
   }
 
+  // 4.1) 财务科目规则（仅对存在结构化财报 partner_finance.detail_json.fiscal 的客户生效）
+  const S = D.finance.statement;
+  const fiscalRow = latestFiscal(finance);
+  let finVeto = false;
+  let finMetrics = null;
+  if (fiscalRow) {
+    finMetrics = computeFiscalMetrics(fiscalRow.fiscal);
+    const entries = [];
+    const addEntry = (delta, reason) => entries.push({ delta, reason });
+
+    const tier = (list, value) =>
+      list.find((t) => (t.min !== undefined ? value >= t.min : value < t.max)) || null;
+
+    if (finMetrics.debtRatio !== null) {
+      const t = tier(S.debtRatio, finMetrics.debtRatio);
+      if (t) addEntry(t.delta, `${t.label}（${pctText(finMetrics.debtRatio)}）`);
+    }
+    if (finMetrics.currentRatio !== null) {
+      const t = tier(S.currentRatio, finMetrics.currentRatio);
+      if (t) addEntry(t.delta, `${t.label}（${xText(finMetrics.currentRatio)}）`);
+    }
+    if (finMetrics.interestCover !== null) {
+      const t = tier(S.interestCover, finMetrics.interestCover);
+      if (t) addEntry(t.delta, `${t.label}（${xText(finMetrics.interestCover)}）`);
+    }
+    if (finMetrics.lossYears > 0) {
+      const d = Math.max(S.lossYears.max, finMetrics.lossYears * S.lossYears.perYear);
+      addEntry(d, `最近连续亏损 ${finMetrics.lossYears} 年`);
+    }
+    if (finMetrics.ocf < 0) addEntry(S.negativeOcf, '最近一期经营活动现金流量净额为负');
+    if (finMetrics.netAssetsNegative) {
+      addEntry(S.debtToEquity[0].delta, '净资产为负（资不抵债）');
+    } else if (finMetrics.debtToEquity !== null) {
+      const t = tier(S.debtToEquity, finMetrics.debtToEquity);
+      if (t) addEntry(t.delta, `${t.label}（${xText(finMetrics.debtToEquity)}）`);
+    }
+
+    let sum = entries.reduce((a, e) => a + e.delta, 0);
+    for (const e of entries) {
+      score += e.delta;
+      push(reasons, e.delta, '财务', e.reason);
+    }
+    if (sum < S.max) {
+      const adjust = S.max - sum;
+      score += adjust;
+      push(reasons, adjust, '财务', `财报扣分合计达上限 ${S.max} 分`);
+      sum = S.max;
+    }
+
+    // 财务红线：偿债能力实质恶化时封顶，避免「司法/合规无数据 → 默认满分」
+    const FV = R.financeVeto;
+    if (
+      FV &&
+      FV.enabled &&
+      finMetrics.debtRatio !== null &&
+      finMetrics.debtRatio >= FV.debtRatioMin &&
+      finMetrics.lossYears >= FV.lossYearsMin
+    ) {
+      finVeto = true;
+      push(
+        reasons,
+        0,
+        '财务红线',
+        `资产负债率 ${pctText(finMetrics.debtRatio)} ≥ ${pctText(FV.debtRatioMin)}，且最近连续亏损 ${finMetrics.lossYears} 年`,
+      );
+    }
+  }
+
   // 5) 舆情：暂无数据源，保留权重
+  if (!judicial.length && !credit.length) {
+    push(
+      reasons,
+      0,
+      '数据',
+      tyc && tyc.hasData
+        ? '司法/合规仅有天眼AI 风险总览聚合计数（逐条明细与实际角色需 VIP 权益），评分完整性受限'
+        : '司法/信用合规渠道无数据（未配置渠道 Key），该两维度本次未扣分，评分完整性受限',
+    );
+  }
 
   score = Math.max(0, Math.min(100, score));
 
-  // 一票否决：分数封顶（避免出现「95 分 / D 级」的矛盾展示）
-  if (veto && score > R.vetoScoreCap) {
-    const capDelta = R.vetoScoreCap - score;
-    score = R.vetoScoreCap;
-    push(reasons, capDelta, '否决', `一票否决：评分封顶 ${R.vetoScoreCap} 分`);
+  // 封顶：一票否决优先，其次财务红线（避免出现「95 分 / D 级」的矛盾展示）
+  let cap = null;
+  let capCategory = '否决';
+  if (veto) {
+    cap = R.vetoScoreCap;
+    capCategory = '否决';
+  }
+  if (finVeto) {
+    const fc = R.financeVeto.scoreCap;
+    cap = cap === null ? fc : Math.min(cap, fc);
+    if (!veto) capCategory = '财务红线';
+  }
+  if (cap !== null && score > cap) {
+    const capDelta = cap - score;
+    score = cap;
+    push(
+      reasons,
+      capDelta,
+      capCategory,
+      `${capCategory === '否决' ? '一票否决' : '财务红线'}：评分封顶 ${cap} 分`,
+    );
   }
 
   let grade = 'D';
@@ -135,6 +315,9 @@ export async function calculateScore(partnerId) {
   if (veto) {
     grade = 'D';
     riskLevel = '极高';
+  } else if (finVeto) {
+    grade = R.financeVeto.grade;
+    riskLevel = R.financeVeto.riskLevel;
   }
 
   return {
@@ -143,6 +326,9 @@ export async function calculateScore(partnerId) {
     grade,
     riskLevel,
     veto,
+    financeVeto: finVeto,
+    financeMetrics: finMetrics,
+    tycMetrics: tyc || null,
     reasons,
     calcVersion: R.version,
   };

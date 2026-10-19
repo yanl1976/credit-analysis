@@ -21,6 +21,13 @@ export const partnerApi = {
   rating: (id) => http.get(`/partners/${id}/rating`),
   ratingHistory: (id, limit = 20) => http.get(`/partners/${id}/rating-history`, { params: { limit } }),
   collectSummary: (id) => http.get(`/partners/${id}/collect-summary`),
+  financeFromEastmoney: (id, body) => http.post(`/partners/${id}/finance/eastmoney`, body),
+  // 天眼AI（MCP）：基础画像 4 项 + P0 风险明细 11 项（明细需 VIP 权益）
+  tycProfile: (id) => http.get(`/partners/${id}/tyc-profile`),
+  // 15 个工具逐个调用（间隔 600ms + 网络往返），必须放宽超时，否则 30s 默认值会被拖掉
+  tycSync: (id) => http.post(`/partners/${id}/tyc-sync`, null, { timeout: 180000 }),
+  // 只重解析已同步的原始报文，不再请求天眼AI（不消耗调用额度）
+  tycResync: (id) => http.post(`/partners/${id}/tyc-resync`),
   createDim: (id, kind, body) => http.post(`/partners/${id}/${kind}`, body),
   updateDim: (id, kind, itemId, body) => http.put(`/partners/${id}/${kind}/${itemId}`, body),
   removeDim: (id, kind, itemId) => http.delete(`/partners/${id}/${kind}/${itemId}`),

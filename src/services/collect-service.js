@@ -352,21 +352,50 @@ export async function getCollectSummary(partnerId) {
 
 // 只返回有案号的司法记录：无案号的历史 AI 推断（2026-10 之前写入）不参与评分，也不展示。
 // 数据仍在表里可追溯，需要彻底清理时按 data_source='ai' AND case_no='' 单独处理。
+//
+// 例外：天眼AI（data_source='tyc_mcp'）是渠道核实数据，可信度与 AI 推断不同。
+// 失信被执行人 / 限制高消费 在官方返回里允许没有案号（只有主体 + 发布日期），
+// 若一并按「无案号即丢弃」处理，会让评分卡的一票否决（失信/限高）永远不触发，故豁免。
 export async function getJudicial(partnerId) {
   return db.all(
     `SELECT * FROM partner_judicial
-      WHERE partner_id = ? AND IFNULL(case_no, '') <> ''
+      WHERE partner_id = ?
+        AND (IFNULL(case_no, '') <> '' OR data_source = 'tyc_mcp')
       ORDER BY id DESC`,
     [partnerId],
   );
 }
 
+// 空壳合规记录（只有类型，无事由/机关/日期）不展示、不计分：
+// 这类记录没有可核验内容，却会按"条数"扣分，属于典型的 AI 幻觉产物。
 export async function getCredit(partnerId) {
-  return db.all('SELECT * FROM partner_credit WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
+  return db.all(
+    `SELECT * FROM partner_credit
+      WHERE partner_id = ?
+        AND NOT (IFNULL(reason, '') = '' AND IFNULL(authority, '') = '' AND date IS NULL)
+      ORDER BY id DESC`,
+    [partnerId],
+  );
 }
 
 export async function getFinance(partnerId) {
-  return db.all('SELECT * FROM partner_finance WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
+  const rows = await db.all('SELECT * FROM partner_finance WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
+  // 兼容早期写在 detail_json 里的上市公司字段（现已有独立列），列上为空时回填
+  return rows.map((r) => {
+    if (r.stock_code || !r.detail_json) return r;
+    let d = {};
+    try {
+      d = JSON.parse(r.detail_json) || {};
+    } catch {
+      return r;
+    }
+    return {
+      ...r,
+      stock_code: r.stock_code || d.stockCode || null,
+      report_period: r.report_period || d.reportPeriod || null,
+      listed_status: r.listed_status || d.listedStatus || null,
+    };
+  });
 }
 
 // ===== 手工录入：司法 / 信用 / 财务 单条 CRUD（渠道不可用时的真实数据入口）=====
@@ -399,13 +428,28 @@ const DIMENSIONS = {
     table: 'partner_finance',
     fields: {
       src: 'src',
+      stockCode: 'stock_code',
+      reportPeriod: 'report_period',
+      listedStatus: 'listed_status',
       revYoy: 'rev_yoy',
       profit: 'profit',
       scaleTag: 'scale_tag',
       employeeCnt: 'employee_cnt',
       bidCnt: 'bid_cnt',
     },
-    prefix: ['src', 'rev_yoy', 'profit', 'scale_tag', 'employee_cnt', 'bid_cnt', 'detail_json', 'fetched_at'],
+    prefix: [
+      'src',
+      'stock_code',
+      'report_period',
+      'listed_status',
+      'rev_yoy',
+      'profit',
+      'scale_tag',
+      'employee_cnt',
+      'bid_cnt',
+      'detail_json',
+      'fetched_at',
+    ],
   },
 };
 

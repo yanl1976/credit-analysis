@@ -4,6 +4,8 @@ import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
 import { requirePerm } from '../middleware/permission.js';
 import * as collectService from '../services/collect-service.js';
+import { syncPartnerFinanceFromEastmoney } from '../services/eastmoney-service.js';
+import * as tycService from '../services/tyc-service.js';
 import { getSetting } from '../services/setting-service.js';
 import {
   calculateScore,
@@ -158,6 +160,30 @@ router.get('/:id/credit', async (req, res, next) => {
   }
 });
 
+// 从东方财富拉取上市公司真实财报（按股票代码），用于上市客户 / 上市子公司
+router.post('/:id/finance/eastmoney', requirePerm('customer:manage'), async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    const stockCode = String(req.body?.stockCode || '').trim();
+    if (!/^\d{6}$/.test(stockCode)) {
+      return res.status(400).json({ code: 400, message: '请填写 6 位股票代码（如 600192）' });
+    }
+    const listedStatus = ['本公司上市', '母公司上市', '未上市'].includes(req.body?.listedStatus)
+      ? req.body.listedStatus
+      : '母公司上市';
+    const data = await syncPartnerFinanceFromEastmoney(partner.id, stockCode, { listedStatus });
+    const scored = await autoRecalcIfEnabled(partner.id);
+    res.json({ code: 0, data: { ...data, scored } });
+  } catch (e) {
+    // 取数失败必须显式报错，绝不用推测数据顶替
+    res.status(502).json({ code: 502, message: `东方财富取数失败：${e.message}` });
+  }
+});
+
 // ===== 手工录入：司法 / 信用 / 财务 单条增删改（customer:manage + 数据范围）=====
 const DIM_KINDS = ['judicial', 'credit', 'finance'];
 
@@ -221,6 +247,57 @@ router.get('/:id/finance', async (req, res, next) => {
       return res.status(403).json({ code: 403, message: '无权访问该客户' });
     }
     res.json({ code: 0, data: await collectService.getFinance(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 天眼AI 企业画像（读取最近一次同步结果）
+router.get('/:id/tyc-profile', requirePerm('report:view'), async (req, res, next) => {
+  try {
+    const partner = await partnerService.getPartner(Number(req.params.id));
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    res.json({ code: 0, data: await tycService.getTycProfile(Number(req.params.id)) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 天眼AI 同步（customer:manage）：基础画像 4 项 + P0 风险明细 11 项
+// 权益未开通的工具会在 failed[].permissionDenied 里标出，不影响其余工具
+router.post('/:id/tyc-sync', requirePerm('customer:manage'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const partner = await partnerService.getPartner(id);
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    const data = await tycService.syncTycProfile(id, partner.name);
+    // 同步后立即重算，保证报告页分数与新增风险一致
+    const rating = await ratePartner(id);
+    res.json({ code: 0, data: { ...data, rating } });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 天眼AI 重解析（customer:manage）：不发任何请求，只把已落库的原始报文重新归一化。
+// 用途：归一化规则改进后补落明细，不再消耗天眼查调用额度
+router.post('/:id/tyc-resync', requirePerm('customer:manage'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const partner = await partnerService.getPartner(id);
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    const data = await tycService.resyncTycDimensions(id);
+    const rating = await ratePartner(id);
+    res.json({ code: 0, data: { ...data, rating } });
   } catch (e) {
     next(e);
   }

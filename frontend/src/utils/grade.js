@@ -24,6 +24,7 @@ export const SOURCE_LABELS = {
   demo: '演示数据',
   channel: '渠道采集',
   ai: 'AI 推断',
+  tyc_mcp: '天眼AI',
 };
 
 export function sourceLabel(source) {
@@ -33,6 +34,7 @@ export function sourceLabel(source) {
 export function sourceTagType(source) {
   if (source === 'demo') return 'warning';
   if (source === 'channel') return 'success';
+  if (source === 'tyc_mcp') return 'success';
   if (source === 'ai') return 'danger';
   return 'info';
 }

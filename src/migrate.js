@@ -106,7 +106,10 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS partner_finance (
     id INT UNSIGNED NOT NULL AUTO_INCREMENT,
     partner_id INT UNSIGNED NOT NULL,
-    src VARCHAR(32) NULL,
+    src VARCHAR(64) NULL,
+    stock_code VARCHAR(16) NULL,
+    report_period VARCHAR(16) NULL,
+    listed_status VARCHAR(16) NULL,
     rev_yoy VARCHAR(32) NULL,
     profit VARCHAR(32) NULL,
     scale_tag VARCHAR(32) NULL,
@@ -212,6 +215,22 @@ const COLUMN_UPGRADES = [
     table: 'fetch_task',
     column: 'reason_code',
     sql: 'ALTER TABLE fetch_task ADD COLUMN reason_code VARCHAR(32) NULL AFTER status',
+  },
+  {
+    // 上市公司/上市子公司财务线索：来源站点、股票代码、报告期、上市关系
+    table: 'partner_finance',
+    column: 'stock_code',
+    sql: 'ALTER TABLE partner_finance ADD COLUMN stock_code VARCHAR(16) NULL AFTER src',
+  },
+  {
+    table: 'partner_finance',
+    column: 'report_period',
+    sql: 'ALTER TABLE partner_finance ADD COLUMN report_period VARCHAR(16) NULL AFTER stock_code',
+  },
+  {
+    table: 'partner_finance',
+    column: 'listed_status',
+    sql: 'ALTER TABLE partner_finance ADD COLUMN listed_status VARCHAR(16) NULL AFTER report_period',
   },
 ];
 
