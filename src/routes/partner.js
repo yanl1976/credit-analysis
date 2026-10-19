@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
 import { requirePerm } from '../middleware/permission.js';
 import * as collectService from '../services/collect-service.js';
+import { getSetting } from '../services/setting-service.js';
 import {
   calculateScore,
   ratePartner,
@@ -156,6 +157,61 @@ router.get('/:id/credit', async (req, res, next) => {
     next(e);
   }
 });
+
+// ===== 手工录入：司法 / 信用 / 财务 单条增删改（customer:manage + 数据范围）=====
+const DIM_KINDS = ['judicial', 'credit', 'finance'];
+
+async function autoRecalcIfEnabled(partnerId) {
+  if (!(await getSetting('scoring.autoRecalcOnManual', true))) return null;
+  return ratePartner(partnerId);
+}
+
+for (const kind of DIM_KINDS) {
+  router.post(`/:id/${kind}`, requirePerm('customer:manage'), async (req, res, next) => {
+    try {
+      const partner = await partnerService.getPartner(Number(req.params.id));
+      if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+      if (!inScope(req.scope, partner.owner_org_id)) {
+        return res.status(403).json({ code: 403, message: '无权访问该客户' });
+      }
+      const item = await collectService.createDimension(kind, partner.id, req.body || {});
+      const scored = await autoRecalcIfEnabled(partner.id);
+      res.json({ code: 0, data: { item, scored } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.put(`/:id/${kind}/:itemId`, requirePerm('customer:manage'), async (req, res, next) => {
+    try {
+      const partner = await partnerService.getPartner(Number(req.params.id));
+      if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+      if (!inScope(req.scope, partner.owner_org_id)) {
+        return res.status(403).json({ code: 403, message: '无权访问该客户' });
+      }
+      const item = await collectService.updateDimension(kind, partner.id, Number(req.params.itemId), req.body || {});
+      const scored = await autoRecalcIfEnabled(partner.id);
+      res.json({ code: 0, data: { item, scored } });
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.delete(`/:id/${kind}/:itemId`, requirePerm('customer:manage'), async (req, res, next) => {
+    try {
+      const partner = await partnerService.getPartner(Number(req.params.id));
+      if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+      if (!inScope(req.scope, partner.owner_org_id)) {
+        return res.status(403).json({ code: 403, message: '无权访问该客户' });
+      }
+      const result = await collectService.deleteDimension(kind, partner.id, Number(req.params.itemId));
+      const scored = await autoRecalcIfEnabled(partner.id);
+      res.json({ code: 0, data: { ...result, scored } });
+    } catch (e) {
+      next(e);
+    }
+  });
+}
 
 router.get('/:id/finance', async (req, res, next) => {
   try {

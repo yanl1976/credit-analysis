@@ -7,6 +7,9 @@
           <p class="page-sub">
             信用代码：{{ partner.credit_code || '-' }} · 法定代表人：{{ partner.legal_person || '-' }}
             · 工商状态：{{ partner.reg_status || '-' }}
+            <el-tag size="small" :type="sourceTagType(partner.data_source)" class="ml8">
+              {{ sourceLabel(partner.data_source) }}
+            </el-tag>
           </p>
         </div>
         <div class="head-actions">
@@ -70,6 +73,12 @@
     <div class="page-card">
       <el-tabs v-model="tab">
         <el-tab-pane label="司法信息" name="judicial">
+          <div class="toolbar">
+            <el-button v-if="auth.hasPerm('customer:manage')" type="primary" size="small" @click="openDim('judicial')">
+              新增司法记录
+            </el-button>
+            <span class="hint">手工录入的数据即为本系统司法风险依据，保存后自动重算评分。</span>
+          </div>
           <el-table :data="judicial" border size="small">
             <el-table-column prop="case_type" label="案件类型" width="120" />
             <el-table-column prop="party_role" label="当事人角色" width="110" />
@@ -78,26 +87,56 @@
             <el-table-column prop="amount" label="标的(元)" width="120" align="right" />
             <el-table-column prop="status" label="状态" width="90" />
             <el-table-column prop="date" label="日期" width="120" />
+            <el-table-column v-if="auth.hasPerm('customer:manage')" label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openDim('judicial', row)">编辑</el-button>
+                <el-button link type="danger" @click="removeDim('judicial', row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="信用/合规" name="credit">
+          <div class="toolbar">
+            <el-button v-if="auth.hasPerm('customer:manage')" type="primary" size="small" @click="openDim('credit')">
+              新增合规记录
+            </el-button>
+            <span class="hint">支持行政处罚、经营异常、严重违法失信、税收违法等类型。</span>
+          </div>
           <el-table :data="credit" border size="small">
             <el-table-column prop="item_type" label="类型" width="130" />
             <el-table-column prop="authority" label="机关" min-width="140" />
             <el-table-column prop="reason" label="原因" min-width="200" />
             <el-table-column prop="penalty" label="处罚内容" min-width="140" />
             <el-table-column prop="date" label="日期" width="120" />
+            <el-table-column v-if="auth.hasPerm('customer:manage')" label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openDim('credit', row)">编辑</el-button>
+                <el-button link type="danger" @click="removeDim('credit', row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-tab-pane>
 
         <el-tab-pane label="财务线索" name="finance">
+          <div class="toolbar">
+            <el-button v-if="auth.hasPerm('customer:manage')" type="primary" size="small" @click="openDim('finance')">
+              新增财务线索
+            </el-button>
+            <span class="hint">规模标签（小微/个体等）参与评分，其余字段仅作报告展示。</span>
+          </div>
           <el-table :data="finance" border size="small">
             <el-table-column prop="src" label="来源" width="140" />
             <el-table-column prop="scale_tag" label="规模标签" width="130" />
             <el-table-column prop="rev_yoy" label="营收同比" width="110" align="right" />
             <el-table-column prop="profit" label="利润" width="130" align="right" />
             <el-table-column prop="employee_cnt" label="员工数" width="100" align="right" />
+            <el-table-column v-if="auth.hasPerm('customer:manage')" label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" @click="openDim('finance', row)">编辑</el-button>
+                <el-button link type="danger" @click="removeDim('finance', row)">删除</el-button>
+              </template>
+            </el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -120,16 +159,47 @@
         </el-tab-pane>
       </el-tabs>
     </div>
+
+    <!-- 手工录入：司法 / 信用 / 财务 -->
+    <el-dialog v-model="dimDialog" :title="dimTitle" width="560px">
+      <el-form :model="dimForm" label-width="100px">
+        <el-form-item v-for="f in dimFields" :key="f.key" :label="f.label" :required="f.required">
+          <el-select v-if="f.type === 'select'" v-model="dimForm[f.key]" style="width: 100%" clearable>
+            <el-option v-for="o in f.options" :key="o" :label="o" :value="o" />
+          </el-select>
+          <el-input-number
+            v-else-if="f.type === 'number'"
+            v-model="dimForm[f.key]"
+            style="width: 100%"
+            :min="0"
+            :precision="2"
+            :controls="false"
+          />
+          <el-date-picker
+            v-else-if="f.type === 'date'"
+            v-model="dimForm[f.key]"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+          <el-input v-else v-model="dimForm[f.key]" :maxlength="f.maxLength || 120" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dimDialog = false">取消</el-button>
+        <el-button type="primary" :loading="dimSaving" @click="saveDim">保存并重算</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { partnerApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
-import { gradeTagType, riskTagType, deltaClass } from '../utils/grade.js';
+import { gradeTagType, riskTagType, deltaClass, sourceLabel, sourceTagType } from '../utils/grade.js';
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -146,6 +216,90 @@ const history = ref([]);
 const judicial = ref([]);
 const credit = ref([]);
 const finance = ref([]);
+
+// 手工录入字段定义（与后端维度表字段一一对应）
+const DIM_FIELD_DEFS = {
+  judicial: [
+    { key: 'caseType', label: '案件类型', type: 'select', required: true, options: ['失信被执行人', '执行案件', '民事裁判', '破产', '限制高消费'] },
+    { key: 'partyRole', label: '当事人角色', type: 'select', options: ['被告', '原告', '被执行人'] },
+    { key: 'caseNo', label: '案号' },
+    { key: 'court', label: '法院' },
+    { key: 'amount', label: '标的(元)', type: 'number' },
+    { key: 'status', label: '状态', type: 'select', options: ['未结', '已结', '执行中'] },
+    { key: 'date', label: '日期', type: 'date' },
+  ],
+  credit: [
+    { key: 'itemType', label: '类型', type: 'select', required: true, options: ['行政处罚', '经营异常', '严重违法失信', '税收违法'] },
+    { key: 'authority', label: '作出机关' },
+    { key: 'reason', label: '原因' },
+    { key: 'penalty', label: '处罚内容' },
+    { key: 'date', label: '日期', type: 'date' },
+  ],
+  finance: [
+    { key: 'src', label: '数据来源' },
+    { key: 'scaleTag', label: '规模标签', type: 'select', options: ['大型', '中型', '小型', '微型', '小微企业', '个体工商户'] },
+    { key: 'revYoy', label: '营收同比' },
+    { key: 'profit', label: '利润' },
+    { key: 'employeeCnt', label: '员工数', type: 'number' },
+    { key: 'bidCnt', label: '招投标数', type: 'number' },
+  ],
+};
+
+const DIM_LABELS = { judicial: '司法记录', credit: '合规记录', finance: '财务线索' };
+const DIM_ROW_MAP = {
+  judicial: { caseType: 'case_type', partyRole: 'party_role', caseNo: 'case_no', court: 'court', amount: 'amount', status: 'status', date: 'date' },
+  credit: { itemType: 'item_type', authority: 'authority', reason: 'reason', penalty: 'penalty', date: 'date' },
+  finance: { src: 'src', revYoy: 'rev_yoy', profit: 'profit', scaleTag: 'scale_tag', employeeCnt: 'employee_cnt', bidCnt: 'bid_cnt' },
+};
+
+const dimDialog = ref(false);
+const dimKind = ref('judicial');
+const dimSaving = ref(false);
+const dimForm = reactive({ id: null });
+
+const dimFields = computed(() => DIM_FIELD_DEFS[dimKind.value] || []);
+const dimTitle = computed(() => `${dimForm.id ? '编辑' : '新增'}${DIM_LABELS[dimKind.value]}`);
+
+function openDim(kind, row = null) {
+  dimKind.value = kind;
+  for (const k of Object.keys(dimForm)) delete dimForm[k];
+  dimForm.id = row?.id || null;
+  for (const f of DIM_FIELD_DEFS[kind]) {
+    const col = DIM_ROW_MAP[kind][f.key];
+    dimForm[f.key] = row ? row[col] ?? (f.type === 'number' ? null : '') : f.type === 'number' ? null : '';
+  }
+  dimDialog.value = true;
+}
+
+async function saveDim() {
+  for (const f of dimFields.value) {
+    if (f.required && !dimForm[f.key]) return ElMessage.warning(`请填写${f.label}`);
+  }
+  const payload = {};
+  for (const f of dimFields.value) payload[f.key] = dimForm[f.key];
+  dimSaving.value = true;
+  try {
+    const res = dimForm.id
+      ? await partnerApi.updateDim(id, dimKind.value, dimForm.id, payload)
+      : await partnerApi.createDim(id, dimKind.value, payload);
+    dimDialog.value = false;
+    const s = res?.scored;
+    ElMessage.success(s ? `已保存，评分已重算：${s.score} 分 / ${s.grade}` : '已保存');
+    await loadAll();
+  } finally {
+    dimSaving.value = false;
+  }
+}
+
+async function removeDim(kind, row) {
+  await ElMessageBox.confirm(`确认删除这条${DIM_LABELS[kind]}？删除后评分将按剩余数据重算。`, '删除确认', {
+    type: 'warning',
+  });
+  const res = await partnerApi.removeDim(id, kind, row.id);
+  const s = res?.scored;
+  ElMessage.success(s ? `已删除，评分已重算：${s.score} 分 / ${s.grade}` : '已删除');
+  await loadAll();
+}
 
 const scoreClass = computed(() => {
   const s = ratingData.value?.score;
@@ -266,6 +420,14 @@ onMounted(loadAll);
 .reasons-title {
   font-weight: 600;
   margin-bottom: 10px;
+}
+.ml8 {
+  margin-left: 8px;
+}
+.hint {
+  color: #909399;
+  font-size: 13px;
+  margin-left: auto;
 }
 :deep(.delta-minus) {
   color: #f56c6c;

@@ -19,6 +19,22 @@ export function riskTagType(riskLevel) {
   return 'info';
 }
 
+export const SOURCE_LABELS = {
+  manual: '手工录入',
+  demo: '演示数据',
+  channel: '渠道采集',
+};
+
+export function sourceLabel(source) {
+  return SOURCE_LABELS[source] || '手工录入';
+}
+
+export function sourceTagType(source) {
+  if (source === 'demo') return 'warning';
+  if (source === 'channel') return 'success';
+  return 'info';
+}
+
 export function deltaClass(delta) {
   if (delta > 0) return 'delta-plus';
   if (delta < 0) return 'delta-minus';

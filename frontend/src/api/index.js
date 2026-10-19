@@ -21,6 +21,9 @@ export const partnerApi = {
   rating: (id) => http.get(`/partners/${id}/rating`),
   ratingHistory: (id, limit = 20) => http.get(`/partners/${id}/rating-history`, { params: { limit } }),
   collectSummary: (id) => http.get(`/partners/${id}/collect-summary`),
+  createDim: (id, kind, body) => http.post(`/partners/${id}/${kind}`, body),
+  updateDim: (id, kind, itemId, body) => http.put(`/partners/${id}/${kind}/${itemId}`, body),
+  removeDim: (id, kind, itemId) => http.delete(`/partners/${id}/${kind}/${itemId}`),
 };
 
 export const riskApi = {

@@ -4,6 +4,7 @@
       <div class="stat-card">
         <div class="label">客户总数</div>
         <div class="value">{{ data.partnerCount }}</div>
+        <div v-if="data.demoPartnerCount" class="note">其中演示数据 {{ data.demoPartnerCount }} 家</div>
       </div>
       <div class="stat-card">
         <div class="label">已评分 / 未评分</div>
@@ -121,6 +122,7 @@ const router = useRouter();
 const loading = ref(false);
 const data = reactive({
   partnerCount: 0,
+  demoPartnerCount: 0,
   ratedCount: 0,
   unratedCount: 0,
   avgScore: null,
@@ -231,6 +233,11 @@ onMounted(async () => {
 .unit {
   font-size: 16px;
   color: #909399;
+}
+.note {
+  color: #e6a23c;
+  font-size: 12px;
+  margin-top: 4px;
 }
 .value.danger {
   color: #f56c6c;

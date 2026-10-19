@@ -68,6 +68,7 @@ const DDL = [
     reg_status VARCHAR(32) NULL,
     province VARCHAR(32) NULL,
     industry VARCHAR(64) NULL,
+    data_source VARCHAR(16) NOT NULL DEFAULT 'manual',
     created_at DATETIME NULL,
     updated_at DATETIME NULL,
     PRIMARY KEY (id),
@@ -183,10 +184,31 @@ const DDL = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 ];
 
+// 增量列（MySQL 不支持 ADD COLUMN IF NOT EXISTS，用 information_schema 判断后补）
+const COLUMN_UPGRADES = [
+  {
+    table: 'partner',
+    column: 'data_source',
+    sql: "ALTER TABLE partner ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual' AFTER industry",
+  },
+];
+
+async function ensureColumns() {
+  for (const u of COLUMN_UPGRADES) {
+    const row = await db.get(
+      `SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      [u.table, u.column],
+    );
+    if (!Number(row?.c)) await db.exec(u.sql);
+  }
+}
+
 export async function createTables() {
   for (const sql of DDL) {
     if (sql.trim()) await db.exec(sql);
   }
+  await ensureColumns();
 }
 
 async function main() {

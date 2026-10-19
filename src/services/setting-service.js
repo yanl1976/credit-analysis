@@ -30,6 +30,14 @@ export const SETTING_DEFS = [
   },
   {
     group: '评分与预警',
+    key: 'scoring.autoRecalcOnManual',
+    label: '手工录入后自动重算',
+    type: 'boolean',
+    default: true,
+    description: '手工录入/修改/删除司法、信用、财务记录后，自动重算该客户评分',
+  },
+  {
+    group: '评分与预警',
     key: 'warning.recordGradeChange',
     label: '等级变化写入预警',
     type: 'boolean',

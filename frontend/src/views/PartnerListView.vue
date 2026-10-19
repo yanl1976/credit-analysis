@@ -38,6 +38,11 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
+      <el-table-column label="数据来源" width="110">
+        <template #default="{ row }">
+          <el-tag size="small" :type="sourceTagType(row.data_source)">{{ sourceLabel(row.data_source) }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="industry" label="行业" width="120" />
       <el-table-column prop="province" label="省份" width="100" />
       <el-table-column label="操作" width="230" fixed="right">
@@ -117,6 +122,7 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { partnerApi, authApi, orgApi, settingApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
+import { sourceLabel, sourceTagType } from '../utils/grade.js';
 
 const auth = useAuthStore();
 const router = useRouter();

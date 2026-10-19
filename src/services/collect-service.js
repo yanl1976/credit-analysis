@@ -175,3 +175,107 @@ export async function getCredit(partnerId) {
 export async function getFinance(partnerId) {
   return db.all('SELECT * FROM partner_finance WHERE partner_id = ? ORDER BY id DESC', [partnerId]);
 }
+
+// ===== 手工录入：司法 / 信用 / 财务 单条 CRUD（渠道不可用时的真实数据入口）=====
+const DIMENSIONS = {
+  judicial: {
+    table: 'partner_judicial',
+    fields: {
+      caseType: 'case_type',
+      partyRole: 'party_role',
+      caseNo: 'case_no',
+      court: 'court',
+      amount: 'amount',
+      status: 'status',
+      date: 'date',
+    },
+    prefix: ['case_type', 'party_role', 'case_no', 'court', 'amount', 'status', 'date', 'detail_json', 'fetched_at'],
+  },
+  credit: {
+    table: 'partner_credit',
+    fields: {
+      itemType: 'item_type',
+      authority: 'authority',
+      reason: 'reason',
+      penalty: 'penalty',
+      date: 'date',
+    },
+    prefix: ['item_type', 'authority', 'reason', 'penalty', 'date', 'detail_json', 'fetched_at'],
+  },
+  finance: {
+    table: 'partner_finance',
+    fields: {
+      src: 'src',
+      revYoy: 'rev_yoy',
+      profit: 'profit',
+      scaleTag: 'scale_tag',
+      employeeCnt: 'employee_cnt',
+      bidCnt: 'bid_cnt',
+    },
+    prefix: ['src', 'rev_yoy', 'profit', 'scale_tag', 'employee_cnt', 'bid_cnt', 'detail_json', 'fetched_at'],
+  },
+};
+
+function dimDef(kind) {
+  const def = DIMENSIONS[kind];
+  if (!def) throw new Error(`不支持的维度类型: ${kind}`);
+  return def;
+}
+
+function pickColumns(def, item = {}) {
+  const cols = [];
+  const params = [];
+  for (const [key, col] of Object.entries(def.fields)) {
+    if (item[key] === undefined) continue;
+    let v = item[key];
+    if (v === '') v = null;
+    cols.push(col);
+    params.push(v);
+  }
+  if (item.detail !== undefined) {
+    cols.push('detail_json');
+    params.push(item.detail === null ? null : JSON.stringify(item.detail));
+  }
+  return { cols, params };
+}
+
+export async function listDimension(kind, partnerId) {
+  const def = dimDef(kind);
+  return db.all(`SELECT * FROM ${def.table} WHERE partner_id = ? ORDER BY id DESC`, [Number(partnerId)]);
+}
+
+export async function createDimension(kind, partnerId, item = {}) {
+  const def = dimDef(kind);
+  const { cols, params } = pickColumns(def, item);
+  const allCols = ['partner_id', ...cols, 'fetched_at'];
+  const allParams = [Number(partnerId), ...params, now()];
+  const r = await db.run(
+    `INSERT INTO ${def.table} (${allCols.join(', ')}) VALUES (${allCols.map(() => '?').join(', ')})`,
+    allParams,
+  );
+  return db.get(`SELECT * FROM ${def.table} WHERE id = ?`, [Number(r.lastInsertRowid)]);
+}
+
+export async function updateDimension(kind, partnerId, id, item = {}) {
+  const def = dimDef(kind);
+  const row = await db.get(`SELECT * FROM ${def.table} WHERE id = ? AND partner_id = ?`, [Number(id), Number(partnerId)]);
+  if (!row) throw new Error('记录不存在');
+  const { cols, params } = pickColumns(def, item);
+  if (!cols.length) return row;
+  const sets = cols.map((c) => `${c} = ?`).join(', ');
+  await db.run(`UPDATE ${def.table} SET ${sets}, fetched_at = ? WHERE id = ? AND partner_id = ?`, [
+    ...params,
+    now(),
+    Number(id),
+    Number(partnerId),
+  ]);
+  return db.get(`SELECT * FROM ${def.table} WHERE id = ?`, [Number(id)]);
+}
+
+export async function deleteDimension(kind, partnerId, id) {
+  const def = dimDef(kind);
+  const row = await db.get(`SELECT id FROM ${def.table} WHERE id = ? AND partner_id = ?`, [Number(id), Number(partnerId)]);
+  if (!row) throw new Error('记录不存在');
+  await db.run(`DELETE FROM ${def.table} WHERE id = ? AND partner_id = ?`, [Number(id), Number(partnerId)]);
+  return { deleted: true };
+}

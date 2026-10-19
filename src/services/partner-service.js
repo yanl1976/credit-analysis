@@ -47,6 +47,7 @@ export async function createPartner({
   province,
   industry,
   aliasNames,
+  dataSource,
 }) {
   if (!name || !String(name).trim()) throw new Error('name 必填');
   const code = normalizeCreditCode(creditCode);
@@ -56,10 +57,11 @@ export async function createPartner({
     if (exists) return { ...exists, _normalized: true };
   }
 
+  const source = ['manual', 'demo', 'channel'].includes(dataSource) ? dataSource : 'manual';
   const r = await db.run(
     `INSERT INTO partner
-      (owner_org_id, credit_code, name, alias_names, legal_person, reg_status, province, industry, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (owner_org_id, credit_code, name, alias_names, legal_person, reg_status, province, industry, data_source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       Number(ownerOrgId) || 0,
       code,
@@ -69,6 +71,7 @@ export async function createPartner({
       regStatus || null,
       province || null,
       industry || null,
+      source,
       now(),
       now(),
     ],

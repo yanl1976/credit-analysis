@@ -17,6 +17,8 @@ export async function getOverview({ orgIds = null } = {}) {
   const s = scopeSql(orgIds);
 
   const partnerRow = await db.get(`SELECT COUNT(*) AS c FROM partner p ${s.sql}`, s.params);
+  const demoWhere = s.sql ? `${s.sql} AND p.data_source = 'demo'` : "WHERE p.data_source = 'demo'";
+  const demoRow = await db.get(`SELECT COUNT(*) AS c FROM partner p ${demoWhere}`, s.params);
   const ratedRow = await db.get(
     `SELECT COUNT(*) AS c FROM partner_rating r JOIN partner p ON p.id = r.partner_id ${s.sql}`,
     s.params,
@@ -66,6 +68,7 @@ export async function getOverview({ orgIds = null } = {}) {
 
   return {
     partnerCount,
+    demoPartnerCount: Number(demoRow?.c || 0),
     ratedCount,
     unratedCount: Math.max(0, partnerCount - ratedCount),
     avgScore: scoreRow?.avgScore === null || scoreRow?.avgScore === undefined ? null : Number(Number(scoreRow.avgScore).toFixed(1)),

@@ -45,6 +45,7 @@ async function clearDemo() {
         regStatus: c.reg,
         province: c.province,
         industry: c.industry,
+        dataSource: 'demo',
       });
       ids[c.code] = p.id;
     }
@@ -98,13 +99,15 @@ async function clearDemo() {
 
     console.log(`[seed-demo] 清理旧演示客户 ${removed} 个，重算 ${batch.total} 个，等级变化 ${batch.gradeChanged} 个`);
     const rows = await db.all(
-      `SELECT p.name, r.score, r.grade, r.risk_level, r.veto
+      `SELECT p.name, p.data_source, r.score, r.grade, r.risk_level, r.veto
          FROM partner p LEFT JOIN partner_rating r ON r.partner_id = p.id
         WHERE p.credit_code LIKE ? ORDER BY p.id`,
       [`${DEMO_CODE_PREFIX}%`],
     );
     for (const r of rows) {
-      console.log(`  ${r.name}  ${r.score} 分  ${r.grade}  风险=${r.risk_level}${Number(r.veto) ? '  [一票否决]' : ''}`);
+      console.log(
+        `  [${r.data_source === 'demo' ? '演示' : r.data_source}] ${r.name}  ${r.score} 分  ${r.grade}  风险=${r.risk_level}${Number(r.veto) ? '  [一票否决]' : ''}`,
+      );
     }
     const ev = await db.get('SELECT COUNT(*) AS c FROM risk_event');
     console.log(`[seed-demo] 预警事件合计 ${ev.c} 条`);
