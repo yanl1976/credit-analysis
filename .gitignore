@@ -1,0 +1,26 @@
+# 依赖
+node_modules/
+
+# 运行时数据与缓存（外部 API 原始返回、采集缓存、SQLite 库文件）
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# 环境变量与密钥（保留 .example 模板）
+.env
+.env.local
+config/channels.local.*
+config/*.local.*
+
+# 构建产物
+dist/
+build/
+
+# 日志
+*.log
+
+# 编辑器 / OS
+.DS_Store
+.idea/
+.vscode/
