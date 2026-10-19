@@ -3,6 +3,7 @@ import express from 'express';
 import db from './db.js';
 import { appConfig } from '../config/app.js';
 import { createTables } from './migrate.js';
+import orgRoutes from './routes/org.js';
 
 const app = express();
 app.use(express.json());
@@ -15,6 +16,15 @@ app.get('/health', async (req, res) => {
   } catch (e) {
     res.status(500).json({ status: 'error', db: 'down', message: e.message });
   }
+});
+
+// 业务路由
+app.use('/api/orgs', orgRoutes);
+
+// 统一错误处理（放在所有路由之后）
+app.use((err, req, res, next) => {
+  console.error('[server] 请求错误:', err.message);
+  res.status(500).json({ code: 500, message: err.message });
 });
 
 (async () => {
