@@ -1,5 +1,0 @@
-init: 工程初始化与资信分析技术方案
-
-- Node ESM + Express + Knex/SQLite 工程骨架（package.json、.env.example）
-- .gitignore 排除依赖/运行时数据/密钥
-- docs/技术方案.md 资信分析系统设计方案（客户为主/国内/纯外部/集团+多级子公司权限/信创适配）
