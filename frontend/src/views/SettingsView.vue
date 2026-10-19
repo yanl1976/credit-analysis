@@ -164,7 +164,9 @@
             </el-table-column>
             <el-table-column label="能力" min-width="200">
               <template #default="{ row }">
-                <el-tag v-for="c in row.capabilities" :key="c" size="small" type="info" class="mr6">{{ c }}</el-tag>
+                <el-tag v-for="c in row.capabilities" :key="c" size="small" type="info" class="mr6">
+                  {{ CAP_LABEL[c] || c }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="base" label="接口地址" min-width="220" show-overflow-tooltip />
@@ -285,7 +287,8 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessageBox } from 'element-plus';
+import { ElMessage } from '../utils/feedback.js';
 import { orgApi, userApi, roleApi, permissionApi, settingApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
 
@@ -304,6 +307,15 @@ const settingForm = reactive({});
 const channels = ref([]);
 const channelNote = ref('');
 const savingSettings = ref(false);
+
+// 渠道能力标签中文名
+const CAP_LABEL = {
+  basic: '工商信息',
+  verify: '主体核验',
+  judicial: '司法风险',
+  credit: '合规风险',
+  finance: '财务线索',
+};
 
 const orgOptions = computed(() => orgs.value);
 

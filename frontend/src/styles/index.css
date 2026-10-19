@@ -67,3 +67,23 @@ body {
   font-weight: 600;
   margin-top: 6px;
 }
+
+/* 统一反馈弹窗（utils/feedback.js）：居中、必须手动关闭、多条按 1、2、3 排列 */
+.fb-dialog {
+  width: 560px;
+  max-width: 90vw;
+}
+
+.fb-dialog .el-message-box__message {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.fb-dialog .fb-line + .fb-line {
+  margin-top: 6px;
+}
+
+.fb-dialog .el-message-box__btns {
+  justify-content: center;
+}

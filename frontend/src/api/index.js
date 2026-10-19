@@ -69,6 +69,9 @@ export const aiApi = {
   status: () => http.get('/ai/status'),
   profile: (name) => http.post('/ai/partner-profile', { name }),
   collect: (id) => http.post(`/ai/collect/${id}`),
+  // 异步采集：先提交任务拿 jobId，再轮询进度（AI 检索要 1~3 分钟，长连接易被超时切断）
+  startCollect: (id) => http.post(`/ai/collect/${id}/job`),
+  collectJob: (jobId) => http.get(`/ai/collect/jobs/${jobId}`),
 };
 
 export const settingApi = {

@@ -28,7 +28,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../utils/feedback.js';
 import { useAuthStore } from '../stores/auth.js';
 import { settingApi } from '../api/index.js';
 

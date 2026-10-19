@@ -194,6 +194,32 @@
       </el-tabs>
     </div>
 
+    <!-- AI 检索进度：检索 + 大模型抽取通常 1~3 分钟，必须让用户看到"还在跑" -->
+    <el-dialog
+      :model-value="!!aiJob"
+      title="AI 检索进行中"
+      width="480px"
+      align-center
+      :show-close="false"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+    >
+      <div class="ai-job">
+        <el-progress
+          :percentage="Math.round(aiJob?.progress || 0)"
+          :stroke-width="16"
+          :text-inside="true"
+          striped
+          striped-flow
+        />
+        <div class="ai-job-step">{{ aiJob?.step || '准备中' }}</div>
+        <div class="ai-job-meta">
+          已耗时 {{ Math.floor((aiJob?.elapsedMs || 0) / 1000) }} 秒 ·
+          检索包含联网搜索与大模型抽取，请勿关闭或刷新页面
+        </div>
+      </div>
+    </el-dialog>
+
     <!-- 手工录入：司法 / 信用 / 财务 -->
     <el-dialog v-model="dimDialog" :title="dimTitle" width="560px">
       <el-form :model="dimForm" label-width="100px">
@@ -228,9 +254,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessageBox } from 'element-plus';
+import { ElMessage } from '../utils/feedback.js';
 import { partnerApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
 import { gradeTagType, riskTagType, deltaClass, sourceLabel, sourceTagType } from '../utils/grade.js';
@@ -243,6 +270,9 @@ const loading = ref(false);
 const collecting = ref(false);
 const aiCollecting = ref(false);
 const aiNote = ref('');
+// AI 检索进度：{ progress, step, elapsedMs }，null 表示无进行中任务
+const aiJob = ref(null);
+let aiPollTimer = null;
 const rating = ref(false);
 const tab = ref('judicial');
 
@@ -258,7 +288,7 @@ const DIM_FIELD_DEFS = {
   judicial: [
     { key: 'caseType', label: '案件类型', type: 'select', required: true, options: ['失信被执行人', '执行案件', '民事裁判', '破产', '限制高消费'] },
     { key: 'partyRole', label: '当事人角色', type: 'select', options: ['被告', '原告', '被执行人'] },
-    { key: 'caseNo', label: '案号' },
+    { key: 'caseNo', label: '案号', required: true },
     { key: 'court', label: '法院' },
     { key: 'amount', label: '标的(元)', type: 'number' },
     { key: 'status', label: '状态', type: 'select', options: ['未结', '已结', '执行中'] },
@@ -385,36 +415,104 @@ async function handleCollect() {
   collecting.value = true;
   try {
     const res = await partnerApi.collect(id);
-    ElMessage.success(`采集完成：${JSON.stringify(res).slice(0, 120)}`);
+    // 只列「实际参与本次采集」的渠道；未启用的（如没配 Key 的企查查）属于预期不参与，
+    // 不应出现在报错提示里，否则会把用户吓成"系统坏了"
+    const active = (res?.tasks || []).filter((t) => t.status !== 'skipped');
+    const items = active.map((t) => {
+      const label = t.channelLabel || t.channel;
+      if (t.status === 'ok') {
+        const filled = t.basicFilled?.length ? `，回填 ${t.basicFilled.length} 个字段` : '';
+        return `${label}：成功${filled}`;
+      }
+      const detail = String(t.err || t.hint || '').trim();
+      return `${label}：${t.reasonLabel || t.status}${detail ? ` — ${detail}` : ''}`;
+    });
+    if (!items.length) {
+      items.push('没有启用的采集渠道，请先在「系统设置 → 数据渠道」中启用并填写 API Key');
+    }
+    const opts = { items, advice: res?.advice };
+    if (res?.okCount > 0 && !res?.failed) ElMessage.success({ title: '采集完成', ...opts });
+    else if (res?.okCount > 0) ElMessage.warning({ title: '采集部分成功', ...opts });
+    else if (res?.failed > 0) ElMessage.error({ title: '采集失败', ...opts });
+    else ElMessage.warning({ title: '未取到数据', ...opts });
     await loadAll();
   } finally {
     collecting.value = false;
   }
 }
 
+// 轮询异步任务的进度；返回最后一次任务结果
+function waitAiJob(jobId) {
+  return new Promise((resolve, reject) => {
+    const tick = async () => {
+      try {
+        const j = await aiApi.collectJob(jobId);
+        // 服务端进度只在步骤切换时跳变；这里做小幅追赶（最多超出服务端 6 个点），
+        // 既不让进度条长时间僵住像"死掉"，也不会虚报成快完成
+        const prev = aiJob.value?.progress || 0;
+        const shown = Math.max(j.progress, Math.min(j.progress + 6, prev + 0.6));
+        aiJob.value = {
+          progress: j.status === 'done' ? 100 : shown,
+          step: j.step,
+          elapsedMs: j.elapsedMs,
+        };
+        if (j.status === 'done') return resolve(j.result);
+        if (j.status === 'error') {
+          const err = new Error(j.error || 'AI 检索失败');
+          err.fromJob = true;
+          return reject(err);
+        }
+        aiPollTimer = setTimeout(tick, 800);
+      } catch (e) {
+        reject(e);
+      }
+    };
+    tick();
+  });
+}
+
 async function handleAiCollect() {
   aiCollecting.value = true;
   aiNote.value = '';
+  aiJob.value = { progress: 0, step: '提交任务…', elapsedMs: 0 };
   try {
-    const res = await aiApi.collect(id);
+    const started = await aiApi.startCollect(id);
+    const res = await waitAiJob(started.jobId);
     const a = res.added || {};
     const s = res.scored;
-    ElMessage.success(
-      `AI 检索完成：司法 ${a.judicial || 0} / 合规 ${a.credit || 0} / 财务 ${a.finance || 0} 条` +
-        (a.skipped ? `（去重跳过 ${a.skipped}）` : '') +
-        (s ? `，评分 ${s.score} 分 / ${s.grade}` : ''),
-    );
+    const items = [
+      `司法记录：新增 ${a.judicial || 0} 条`,
+      `合规记录：新增 ${a.credit || 0} 条`,
+      `财务记录：新增 ${a.finance || 0} 条`,
+    ];
+    if (a.noCaseNo) items.push(`已忽略无案号的司法记录：${a.noCaseNo} 条（司法记录必须有案号）`);
+    if (a.skipped) items.push(`去重跳过：${a.skipped} 条`);
+    if (s) items.push(`重新评分：${s.score} 分 / ${s.grade}`);
     const searchNote = res.meta?.search?.configured
       ? `已联网检索 ${res.meta.search.count} 条资料`
       : '未配置搜索 Key，本次未联网，仅为模型知识推断，可能存在缺漏';
+    items.push(searchNote);
     aiNote.value = `${res.disclaimer}（${searchNote}；所有 AI 记录来源标记为「AI 推断」，请核验）`;
+    ElMessage.success({ title: 'AI 检索完成', items, advice: '所有 AI 推断记录均需人工核验后再采用' });
     await loadAll();
+  } catch (e) {
+    // HTTP 层错误已由请求拦截器弹过提示，这里只处理"任务本身执行失败"
+    if (e?.fromJob) ElMessage.error({ title: 'AI 检索失败', items: [String(e.message || e)] });
   } finally {
     aiCollecting.value = false;
+    aiJob.value = null;
+    if (aiPollTimer) {
+      clearTimeout(aiPollTimer);
+      aiPollTimer = null;
+    }
   }
 }
 
 onMounted(loadAll);
+
+onUnmounted(() => {
+  if (aiPollTimer) clearTimeout(aiPollTimer);
+});
 </script>
 
 <style scoped>
@@ -499,6 +597,24 @@ onMounted(loadAll);
   font-weight: 600;
 }
 :deep(.delta-zero) {
+  color: #909399;
+}
+
+/* AI 检索进度弹窗 */
+.ai-job {
+  padding: 6px 4px 2px;
+  text-align: center;
+}
+.ai-job-step {
+  margin-top: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+}
+.ai-job-meta {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.6;
   color: #909399;
 }
 </style>

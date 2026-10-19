@@ -154,7 +154,8 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessageBox } from 'element-plus';
+import { ElMessage } from '../utils/feedback.js';
 import { partnerApi, authApi, orgApi, settingApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
 import { sourceLabel, sourceTagType } from '../utils/grade.js';

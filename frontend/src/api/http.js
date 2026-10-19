@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { ElMessage } from 'element-plus';
+import { ElMessage } from '../utils/feedback.js';
 
 const TOKEN_KEY = 'ca_access_token';
 
