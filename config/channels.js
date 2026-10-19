@@ -41,14 +41,28 @@ export const channels = {
   },
   // 天眼AI（官方 MCP 服务）：面向 AI 助手的 162 个企业数据工具，免费注册、Bearer 鉴权
   // 与上面的开放平台 API（按次计费、需逐接口开通）是两条独立通道，可并存
-  tianyanchaMcp: {
-    key: 'tianyanchaMcp',
-    name: '天眼AI(MCP)',
-    enabled: Boolean(process.env.TIANYANCHA_MCP_TOKEN),
-    endpoint: process.env.TIANYANCHA_MCP_URL || 'https://mcp.tianyancha.com/v1',
-    token: process.env.TIANYANCHA_MCP_TOKEN || '',
-    timeoutMs: Number(process.env.TIANYANCHA_MCP_TIMEOUT_MS || 30000),
-  },
+  // 多账号轮换：免费版每个账号每天只有 10 次有效调用，用多个手机号注册即可叠加额度。
+  //   主写法 TIANYANCHA_MCP_TOKENS=a,b,c（逗号/分号/空格/换行分隔）
+  //   兼容旧写法 TIANYANCHA_MCP_TOKEN=单个（会并入池首，与 TOKENS 去重）
+  //   实际使用顺序 = 旧单 token（如有）→ TOKENS 依次；某账号额度用尽自动切下一个
+  tianyanchaMcp: (() => {
+    const list = [process.env.TIANYANCHA_MCP_TOKEN || '', process.env.TIANYANCHA_MCP_TOKENS || '']
+      .join(',')
+      .split(/[\s,;|]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const tokens = [...new Set(list)];
+    return {
+      key: 'tianyanchaMcp',
+      name: '天眼AI(MCP)',
+      enabled: tokens.length > 0,
+      endpoint: process.env.TIANYANCHA_MCP_URL || 'https://mcp.tianyancha.com/v1',
+      tokens,
+      // 兼容只认单 token 的旧调用方（如 channels/tyc-mcp-client.js 自检）
+      token: tokens[0] || '',
+      timeoutMs: Number(process.env.TIANYANCHA_MCP_TIMEOUT_MS || 30000),
+    };
+  })(),
 
   // 已移除：信用中国 / 执行信息公开网
   // 原因：两站均启用验证码 + WAF，自动采集不可行；绕验证码既不稳也不合规。

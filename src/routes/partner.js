@@ -81,6 +81,25 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
+// 资信报告「上一条 / 下一条」：按客户列表顺序（id DESC）取相邻客户，作用域/检索词与列表保持一致
+router.get('/:id/neighbors', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const partner = await partnerService.getPartner(id);
+    if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, partner.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    const data = await partnerService.getNeighborPartners(id, {
+      orgIds: req.scope.orgIds,
+      keyword: req.query.keyword,
+    });
+    res.json({ code: 0, data });
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.put('/:id', requirePerm('customer:manage'), async (req, res, next) => {
   try {
     const partner = await partnerService.getPartner(Number(req.params.id));
@@ -267,7 +286,8 @@ router.get('/:id/tyc-profile', requirePerm('report:view'), async (req, res, next
 });
 
 // 天眼AI 同步（customer:manage）：基础画像 4 项 + P0 风险明细 11 项
-// 权益未开通的工具会在 failed[].permissionDenied 里标出，不影响其余工具
+// 默认走节流：已缓存的工具不重复调用、已知无权限的工具直接跳过、额度用尽即熔断
+// 请求体 { force: true } 可忽略缓存与权限记忆强制全量重调（套餐升级后补齐数据用）
 router.post('/:id/tyc-sync', requirePerm('customer:manage'), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -276,7 +296,8 @@ router.post('/:id/tyc-sync', requirePerm('customer:manage'), async (req, res, ne
     if (!inScope(req.scope, partner.owner_org_id)) {
       return res.status(403).json({ code: 403, message: '无权访问该客户' });
     }
-    const data = await tycService.syncTycProfile(id, partner.name);
+    const force = req.body?.force === true || req.body?.force === 'true' || req.query.force === '1';
+    const data = await tycService.syncTycProfile(id, partner.name, { force });
     // 同步后立即重算，保证报告页分数与新增风险一致
     const rating = await ratePartner(id);
     res.json({ code: 0, data: { ...data, rating } });

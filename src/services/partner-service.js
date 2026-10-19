@@ -17,24 +17,71 @@ export async function listPartners({ orgIds, keyword, page = 1, pageSize = 20 } 
   const where = [];
   const params = [];
   if (orgIds && orgIds.length) {
-    where.push(`owner_org_id IN (${orgIds.map(() => '?').join(',')})`);
+    where.push(`p.owner_org_id IN (${orgIds.map(() => '?').join(',')})`);
     params.push(...orgIds.map(Number));
   }
   if (keyword) {
-    where.push('(name LIKE ? OR credit_code LIKE ?)');
+    where.push('(p.name LIKE ? OR p.credit_code LIKE ?)');
     params.push(`%${keyword}%`, `%${keyword}%`);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const totalRow = await db.get(`SELECT COUNT(*) AS c FROM partner ${whereSql}`, params);
+  const totalRow = await db.get(`SELECT COUNT(*) AS c FROM partner p ${whereSql}`, params);
   const total = Number(totalRow?.c || 0);
 
   const p = Math.max(1, Number(page) || 1);
   const ps = Math.min(100, Math.max(1, Number(pageSize) || 20));
+  // 列表直接带出当前评分（信用评分列），未评分客户 rating_* 为 NULL
   const items = await db.all(
-    `SELECT * FROM partner ${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    `SELECT p.*,
+            r.score AS rating_score,
+            r.grade AS rating_grade,
+            r.risk_level AS rating_risk_level,
+            r.veto AS rating_veto,
+            r.calculated_at AS rating_calculated_at
+       FROM partner p
+       LEFT JOIN partner_rating r ON r.partner_id = p.id
+       ${whereSql}
+      ORDER BY p.id DESC LIMIT ? OFFSET ?`,
     [...params, ps, (p - 1) * ps],
   );
   return { items, total, page: p, pageSize: ps };
+}
+
+// 资信报告「上一条 / 下一条」：沿用客户列表顺序（id DESC，最新在前），作用域与列表一致
+// prev = 列表中更靠前的那条（id 比当前大的最小 id）；next = 列表中后一条（id 比当前小的最大 id）
+export async function getNeighborPartners(id, { orgIds, keyword } = {}) {
+  const where = [];
+  const params = [];
+  if (orgIds && orgIds.length) {
+    where.push(`p.owner_org_id IN (${orgIds.map(() => '?').join(',')})`);
+    params.push(...orgIds.map(Number));
+  }
+  if (keyword) {
+    where.push('(p.name LIKE ? OR p.credit_code LIKE ?)');
+    params.push(`%${keyword}%`, `%${keyword}%`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const andSql = where.length ? `AND ${where.join(' AND ')}` : '';
+
+  const [rows, totalRow, beforeRow] = await Promise.all([
+    db.all(
+      `(SELECT p.id, p.name, 'prev' AS dir FROM partner p WHERE p.id > ? ${andSql} ORDER BY p.id ASC LIMIT 1)
+       UNION ALL
+       (SELECT p.id, p.name, 'next' AS dir FROM partner p WHERE p.id < ? ${andSql} ORDER BY p.id DESC LIMIT 1)`,
+      // 占位符顺序：p.id 在前，andSql 里的作用域/检索词在后（每个分支各一组）
+      [id, ...params, id, ...params],
+    ),
+    db.get(`SELECT COUNT(*) AS c FROM partner p ${whereSql}`, params),
+    db.get(`SELECT COUNT(*) AS c FROM partner p ${whereSql ? `${whereSql} AND` : 'WHERE'} p.id > ?`, [...params, id]),
+  ]);
+
+  const pick = (dir) => rows.find((r) => r.dir === dir) || null;
+  return {
+    prev: pick('prev'),
+    next: pick('next'),
+    index: Number(beforeRow?.c || 0) + 1, // 当前客户在列表中的序号（1 起）
+    total: Number(totalRow?.c || 0),
+  };
 }
 
 // 创建客户：按 credit_code 归一，若已存在直接返回已有记录（_normalized=true）

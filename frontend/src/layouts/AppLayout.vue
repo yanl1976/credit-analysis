@@ -18,7 +18,8 @@
         </div>
       </el-header>
       <el-main class="main">
-        <router-view />
+        <!-- 资信报告按完整路径重建，保证「上一条/下一条」切换客户后所有数据重新加载 -->
+        <router-view :key="route.name === 'partner-report' ? route.fullPath : route.path" />
       </el-main>
     </el-container>
   </el-container>

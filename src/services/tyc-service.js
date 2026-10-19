@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import db from '../db.js';
 import { channels } from '../../config/channels.js';
 import { TycMcpClient } from '../channels/tyc-mcp-client.js';
@@ -43,6 +44,25 @@ export const TYC_SYNC_TOOLS = [
 const CALL_INTERVAL_MS = Number(process.env.TIANYANCHA_MCP_INTERVAL_MS || 600);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ===== 调用节流：一次同步不能把额度烧光 =====
+// 固定清单 15 个工具，免费套餐每日只有 10 次有效调用，而 11 个风险明细工具在免费权益下
+// 每次都会被 403 insufficient_entitlement 挡掉（不扣费但白等 13 秒）。四层拦截：
+//   ① 结果缓存：同一客户同一工具 N 小时内已取过 → 复用 partner_raw，不再发请求
+//   ② 权限记忆：被套餐挡掉的工具记入 sys_setting，后续同步直接跳过（到期自动重试探测）
+//   ③ 额度熔断：一旦命中 402 quota_exhausted，本轮剩余工具全部标记跳过，不再空跑
+//   ④ 多账号轮换：某账号额度用尽/无权限 → 自动换下一个账号（见 config/channels.js 的 tokens）
+const envNum = (name, def) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) ? v : def;
+};
+const RAW_CACHE_HOURS = Math.max(0, envNum('TIANYANCHA_MCP_CACHE_HOURS', 24)); // 0 = 关闭缓存
+const DENIED_TTL_DAYS = Math.max(1, envNum('TIANYANCHA_MCP_DENIED_TTL_DAYS', 7));
+const DENIED_SETTING_KEY = 'tyc.mcp.deniedTools';
+// 旧版全局额度标记（仅保留迁移读取，新数据按账号写 tyc.mcp.quota.<指纹>）
+const QUOTA_SETTING_KEY = 'tyc.mcp.quotaExhaustedDate';
+// key 无效/连不上的账号（401 等），按指纹记录，避免每次同步都白连一次
+const BAD_SETTING_KEY = 'tyc.mcp.badTokens';
+
 // 权限类错误的识别：这些不是程序 bug，是账号权益没开，前端要提示「去开通」而不是「报错」
 const PERMISSION_HINTS = [
   /无权限/,
@@ -67,6 +87,151 @@ function isPermissionError(message) {
   return PERMISSION_HINTS.some((re) => re.test(s));
 }
 
+// 额度类错误必须与「权益未开通」区分开：
+// - 权益未开通（403 insufficient_entitlement）→ 要升级套餐，重试无用
+// - 额度用尽（402 quota_exhausted）→ 等次日配额重置或加额度，套餐本身没问题
+// 实测 402 报文里带「用量与权益页面」字样，会被权限正则误判，故先判额度
+const QUOTA_HINTS = [/quota/i, /次数已用完/, /额度/, /超出.{0,4}(限额|限制)/, /\b402\b/];
+
+function isQuotaError(message) {
+  const s = String(message || '');
+  return QUOTA_HINTS.some((re) => re.test(s));
+}
+
+// ===== 节流状态读写 =====
+
+function localDateStr(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// partner_raw.fetched_at 走的是 dateStrings:true，形如 '2026-10-19 23:09:30'
+function parseDbTime(v) {
+  if (!v) return NaN;
+  if (v instanceof Date) return v.getTime();
+  return Date.parse(String(v).replace(' ', 'T'));
+}
+
+function toolLabelOf(tool) {
+  const hit = [...TYC_SYNC_TOOLS, ...OPTIONAL_TOOLS].find((t) => t.tool === tool || t.key === tool);
+  return hit?.label || tool;
+}
+
+async function persistSetting(key, value, description) {
+  await db.run(
+    `INSERT INTO sys_setting (setting_key, setting_value, description, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), description = VALUES(description), updated_at = VALUES(updated_at)`,
+    [key, value, description, new Date()],
+  );
+}
+
+// ===== 多账号 token 池 =====
+// 免费版每个账号每天只有 10 次有效调用，多个手机号注册即可叠加额度。
+// 池子来自 config/channels.js（TIANYANCHA_MCP_TOKEN + TIANYANCHA_MCP_TOKENS 合并去重）。
+function tokenList() {
+  const cfg = channels.tianyanchaMcp || {};
+  const list = Array.isArray(cfg.tokens) && cfg.tokens.length ? cfg.tokens : [cfg.token].filter(Boolean);
+  return [...new Set(list.map((t) => String(t).trim()).filter(Boolean))];
+}
+
+// token 不明文落库：设置键与权限记忆都用指纹分组
+function tokenFp(token) {
+  return createHash('sha256').update(String(token)).digest('hex').slice(0, 12);
+}
+
+const tokenQuotaKey = (fp) => `tyc.mcp.quota.${fp}`;
+
+// 读取节流状态（按账号）：
+// - denied: { [tokenFp]: { [tool]: { at, message } } }（兼容旧版「全局平铺」，归到首个账号）
+// - quota:  { [tokenFp]: 'YYYY-MM-DD' }（该账号当天额度已用尽；兼容旧全局标记，归到首个账号）
+// - bad:    { [tokenFp]: { at, message } }（key 无效/连不上，避免每次同步白连）
+// 过期记录自动丢弃（升级套餐 / 改好 key 后能自愈）
+async function loadToolPolicy(tokens = tokenList()) {
+  const fps = tokens.map(tokenFp);
+  const keys = [DENIED_SETTING_KEY, QUOTA_SETTING_KEY, BAD_SETTING_KEY, ...fps.map(tokenQuotaKey)];
+  const denied = {};
+  const quota = {};
+  const bad = {};
+  try {
+    const rows = await db.all(
+      `SELECT setting_key, setting_value FROM sys_setting WHERE setting_key IN (${keys.map(() => '?').join(',')})`,
+      keys,
+    );
+    const map = new Map(rows.map((r) => [r.setting_key, r.setting_value]));
+
+    const cutoff = Date.now() - DENIED_TTL_DAYS * 86400000;
+    const fresh = (info) => {
+      const at = Date.parse(String(info?.at || ''));
+      return Number.isFinite(at) && at >= cutoff;
+    };
+    const prune = (src) => {
+      const out = {};
+      for (const [name, info] of Object.entries(src || {})) if (fresh(info)) out[name] = info;
+      return out;
+    };
+
+    const parsed = JSON.parse(map.get(DENIED_SETTING_KEY) || 'null');
+    if (parsed && parsed.v === 2 && parsed.tokens) {
+      for (const [fp, byTool] of Object.entries(parsed.tokens)) {
+        const kept = prune(byTool);
+        if (Object.keys(kept).length) denied[fp] = kept;
+      }
+    } else if (parsed && typeof parsed === 'object') {
+      // 旧结构（不分账号）：归给首个账号
+      const kept = prune(parsed);
+      if (Object.keys(kept).length && fps[0]) denied[fps[0]] = kept;
+    }
+
+    const legacyQuota = String(map.get(QUOTA_SETTING_KEY) || '').trim();
+    for (const fp of fps) {
+      const d = String(map.get(tokenQuotaKey(fp)) || '').trim();
+      if (d) quota[fp] = d;
+      else if (fp === fps[0] && legacyQuota) quota[fp] = legacyQuota;
+    }
+
+    Object.assign(bad, prune(JSON.parse(map.get(BAD_SETTING_KEY) || 'null') || {}));
+  } catch {
+    // 节流状态读不出来不影响主流程，退化为「不做跳过」
+  }
+  return { denied, quota, bad, fps };
+}
+
+async function saveDeniedTools(denied) {
+  const hasAny = Object.values(denied || {}).some((m) => m && Object.keys(m).length);
+  if (!hasAny) {
+    await db.run('DELETE FROM sys_setting WHERE setting_key = ?', [DENIED_SETTING_KEY]);
+    return;
+  }
+  await persistSetting(
+    DENIED_SETTING_KEY,
+    JSON.stringify({ v: 2, tokens: denied }),
+    `天眼AI 权益未开通的工具（按账号记录，${DENIED_TTL_DAYS} 天后自动重试探测）`,
+  );
+}
+
+async function saveBadTokens(bad) {
+  if (!Object.keys(bad || {}).length) {
+    await db.run('DELETE FROM sys_setting WHERE setting_key = ?', [BAD_SETTING_KEY]);
+    return;
+  }
+  await persistSetting(
+    BAD_SETTING_KEY,
+    JSON.stringify(bad),
+    `天眼AI key 无效/连接失败的账号（${DENIED_TTL_DAYS} 天后自动重试；改好 key 后指纹变化即视为新账号）`,
+  );
+}
+
+async function loadCachedRaw(pid) {
+  const rows = await db.all(
+    `SELECT biz_key, payload_json, fetched_at FROM partner_raw WHERE partner_id = ? AND channel = ? ORDER BY id DESC`,
+    [pid, CHANNEL],
+  );
+  const latest = {};
+  for (const r of rows) if (!latest[r.biz_key]) latest[r.biz_key] = r;
+  return latest;
+}
+
 function textOf(res) {
   if (Array.isArray(res)) return res.map((x) => x?.text || '').join('\n');
   if (typeof res === 'string') return res;
@@ -84,12 +249,13 @@ function parsePayload(text) {
 }
 
 export function isTycConfigured() {
-  return Boolean(channels.tianyanchaMcp && channels.tianyanchaMcp.token);
+  return tokenList().length > 0;
 }
 
-function makeClient() {
+// 每个账号一个客户端（token 可指定；不传则用池内第一个，兼容旧调用）
+function makeClient(token) {
   const cfg = channels.tianyanchaMcp || {};
-  return new TycMcpClient({ token: cfg.token, endpoint: cfg.endpoint, timeoutMs: cfg.timeoutMs });
+  return new TycMcpClient({ token: token || cfg.token, endpoint: cfg.endpoint, timeoutMs: cfg.timeoutMs });
 }
 
 // ===== 明细落库（幂等：按业务键去重，重复同步不会翻倍计分）=====
@@ -232,6 +398,9 @@ async function callToolCompat(client, tool, companyName) {
     return await client.callTool(tool, { company_name: companyName });
   } catch (e) {
     const msg = String(e.message || '');
+    // 权益/额度类错误重试多少次都一样：直接抛出，绝不能再走参数兼容或调度器兜底
+    // （否则一次同步的调用次数会被放大，白烧额度）
+    if (isQuotaError(msg) || isPermissionError(msg)) throw e;
     const paramIssue = /参数|param|searchKey|company_name|必填|required|missing|invalid/i.test(msg);
     const notFound = /not\s*found|unknown\s*tool|不存在|无此工具|不支持/i.test(msg);
 
@@ -274,59 +443,228 @@ async function discoverOptionalTools(client) {
   }
 }
 
-export async function syncTycProfile(partnerId, companyName) {
-  if (!isTycConfigured()) throw new Error('未配置 TIANYANCHA_MCP_TOKEN，无法调用天眼AI');
+// options.force = true：忽略缓存与权限记忆，强制全量重新调用（套餐升级后用它验证/补齐）
+// 多账号：某个账号额度用尽 / 未开通该工具 → 自动换下一个账号继续，直到取到数据或账号全部试完
+export async function syncTycProfile(partnerId, companyName, options = {}) {
+  const tokens = tokenList();
+  if (!tokens.length) throw new Error('未配置 TIANYANCHA_MCP_TOKEN / TIANYANCHA_MCP_TOKENS，无法调用天眼AI');
   const name = String(companyName || '').trim();
   if (!name) throw new Error('缺少企业名称');
 
   const pid = Number(partnerId);
-  const client = makeClient();
-  await client.connect();
+  const force = options.force === true;
+  const today = localDateStr();
 
-  // 先探测可选工具（破产重整），再拼最终清单
-  const { extras, names } = await discoverOptionalTools(client);
-  const tools = [...TYC_SYNC_TOOLS, ...extras];
+  // 节流状态先读：已落库报文（结果缓存）、各账号的权限记忆、今日额度、key 是否有效
+  const [{ denied: deniedLoaded, quota: quotaLoaded, bad: badLoaded, fps }, cachedRaw] = await Promise.all([
+    loadToolPolicy(tokens),
+    loadCachedRaw(pid),
+  ]);
+
+  // 每个账号一条运行时状态：今日额度是否用尽、该账号的权限记忆、懒建立的连接
+  const accounts = tokens.map((token, i) => ({
+    token,
+    fp: fps[i],
+    index: i + 1,
+    client: null,
+    dead: force ? false : Boolean(badLoaded[fps[i]]),
+    deadReason: force ? '' : badLoaded[fps[i]]?.message || '',
+    denied: force ? {} : { ...(deniedLoaded[fps[i]] || {}) },
+    quotaDate: force ? null : quotaLoaded[fps[i]] || null,
+  }));
+  const isBlocked = (st) => Boolean(st.quotaDate && st.quotaDate === today);
+  const badNow = {}; // { fp: { at, message } }：本轮确认 key 无效/连不上的账号
+
+  // 懒连接：401/网络失败即弃用该账号，换下一个
+  const ensureClient = async (st) => {
+    if (st.client) return st.client;
+    if (st.dead) return null;
+    try {
+      const c = makeClient(st.token);
+      await c.connect();
+      st.client = c;
+      return c;
+    } catch (e) {
+      st.dead = true;
+      st.deadReason = e.message || '账号连接失败';
+      badNow[st.fp] = { at: new Date().toISOString(), message: String(st.deadReason).slice(0, 300) };
+      return null;
+    }
+  };
 
   const done = [];
   const failed = [];
+  const skipped = [];
   const warnings = [];
   const dimensions = { judicial: 0, credit: 0, finance: 0 };
+  const deniedNow = {}; // { fp: { tool: { at, message } } }
+  const okByFp = new Map(); // fp -> Set(tool)：本轮成功取数的工具（用于清理权限记忆与额度标记）
+  let called = 0; // 本轮真实发起的工具调用次数（只有成功取数的才计入额度）
 
-  for (const [i, t] of tools.entries()) {
-    if (i > 0) await sleep(CALL_INTERVAL_MS); // 频率限制：上一项成功/失败都留间隔
-    try {
-      const res = await callToolCompat(client, t.tool, name);
-      const payload = parsePayload(textOf(res));
+  const absorb = (applied) => {
+    dimensions.judicial += applied.counts.judicial;
+    dimensions.credit += applied.counts.credit;
+    dimensions.finance += applied.counts.finance;
+    warnings.push(...applied.warnings);
+  };
 
-      // 原始报文先落库（归一化失败也能事后重解析）
-      await db.run(`DELETE FROM partner_raw WHERE partner_id = ? AND channel = ? AND biz_key = ?`, [pid, CHANNEL, t.key]);
-      await db.run(
-        `INSERT INTO partner_raw (partner_id, channel, biz_key, payload_json, fetched_at) VALUES (?, ?, ?, ?, ?)`,
-        [pid, CHANNEL, t.key, JSON.stringify(payload), new Date()],
-      );
+  // 先用第一个可用账号探测可选工具（破产重整）；tools/list 不消耗企业数据额度
+  let extras = [];
+  let names = [];
+  for (const st of accounts) {
+    const client = await ensureClient(st);
+    if (!client) continue;
+    const found = await discoverOptionalTools(client);
+    extras = found.extras;
+    names = found.names;
+    break;
+  }
+  const tools = [...TYC_SYNC_TOOLS, ...extras];
 
-      const applied = await applyToolPayload(pid, t.normAs || t.tool, payload);
-      dimensions.judicial += applied.counts.judicial;
-      dimensions.credit += applied.counts.credit;
-      dimensions.finance += applied.counts.finance;
-      warnings.push(...applied.warnings);
+  const allBlocked = () => accounts.length > 0 && accounts.every(isBlocked);
 
-      done.push({
-        key: t.key,
-        label: t.label,
-        inserted: applied.counts,
-      });
-    } catch (e) {
-      failed.push({
-        key: t.key,
-        tool: t.tool,
-        label: t.label,
-        message: e.message,
-        // 权益未开通：不是 bug，前端提示「需开通」而不是「同步失败」
-        permissionDenied: isPermissionError(e.message),
-      });
+  for (const t of tools) {
+    const mark = (reason, extra = {}) => skipped.push({ key: t.key, tool: t.tool, label: t.label, reason, ...extra });
+
+    // ① 结果缓存命中：复用已落库报文重放（不请求、不扣额度，还能顺带吃到新的归一化规则）
+    const cached = cachedRaw[t.key];
+    let cacheHit = false;
+    if (!force && cached && RAW_CACHE_HOURS > 0) {
+      const age = Date.now() - parseDbTime(cached.fetched_at);
+      if (Number.isFinite(age) && age >= 0 && age < RAW_CACHE_HOURS * 3600000) {
+        try {
+          const payload = JSON.parse(cached.payload_json);
+          absorb(await applyToolPayload(pid, t.normAs || t.tool, payload));
+          mark('cache', {
+            cachedAt: cached.fetched_at,
+            message: `${RAW_CACHE_HOURS} 小时内已取过该客户数据，直接复用缓存`,
+          });
+          cacheHit = true;
+        } catch {
+          cacheHit = false; // 缓存报文坏了就当没缓存，继续实时调用
+        }
+      }
+    }
+    if (cacheHit) continue;
+
+    // ② 逐个账号尝试：某账号额度用尽 / 该工具被其权益挡掉 → 换下一个账号
+    const tried = new Set();
+    let last = null; // { kind: quota | permission | unavailable, message }
+    let permissionMessage = null; // 本轮该工具真实拿到的 403 报文（决定最终算「失败」还是「已知跳过」）
+    let finished = false;
+    while (!finished) {
+      const st = accounts.find((a) => !a.dead && !isBlocked(a) && !tried.has(a.fp) && !a.denied[t.tool]);
+      if (!st) break;
+      tried.add(st.fp);
+
+      const client = await ensureClient(st);
+      if (!client) {
+        last = { kind: 'unavailable', message: st.deadReason || '账号连接/鉴权失败' };
+        continue;
+      }
+
+      if (called > 0) await sleep(CALL_INTERVAL_MS); // 频率限制：上一项成功/失败都留间隔
+      called += 1;
+      try {
+        const res = await callToolCompat(client, t.tool, name);
+        const payload = parsePayload(textOf(res));
+
+        // 原始报文先落库（归一化失败也能事后重解析）
+        await db.run(`DELETE FROM partner_raw WHERE partner_id = ? AND channel = ? AND biz_key = ?`, [pid, CHANNEL, t.key]);
+        await db.run(
+          `INSERT INTO partner_raw (partner_id, channel, biz_key, payload_json, fetched_at) VALUES (?, ?, ?, ?, ?)`,
+          [pid, CHANNEL, t.key, JSON.stringify(payload), new Date()],
+        );
+
+        const applied = await applyToolPayload(pid, t.normAs || t.tool, payload);
+        absorb(applied);
+
+        done.push({
+          key: t.key,
+          tool: t.tool,
+          label: t.label,
+          inserted: applied.counts,
+          account: st.index,
+        });
+        if (!okByFp.has(st.fp)) okByFp.set(st.fp, new Set());
+        okByFp.get(st.fp).add(t.tool);
+        finished = true;
+      } catch (e) {
+        const quotaExceeded = isQuotaError(e.message);
+        const permissionDenied = !quotaExceeded && isPermissionError(e.message);
+        if (quotaExceeded) {
+          // 该账号今日额度用尽：记下日期后换下一个账号（402 这次调用本身不扣额度）
+          st.quotaDate = today;
+          last = { kind: 'quota', message: String(e.message || '今日额度已用尽') };
+          continue;
+        }
+        if (permissionDenied) {
+          // 该账号权益未开通：记入该账号的权限记忆，换下一个账号再试
+          const info = { at: new Date().toISOString(), message: String(e.message || '').slice(0, 300) };
+          st.denied[t.tool] = info;
+          if (!deniedNow[st.fp]) deniedNow[st.fp] = {};
+          deniedNow[st.fp][t.tool] = info;
+          permissionMessage = e.message;
+          last = { kind: 'permission', message: e.message };
+          continue;
+        }
+        // 401/网络等：本轮弃用该账号
+        st.dead = true;
+        st.deadReason = e.message;
+        last = { kind: 'unavailable', message: e.message };
+      }
+    }
+    if (finished) continue;
+
+    // ③ 所有账号都不行：区分「真的失败」与「已知跳过」
+    const usable = accounts.filter((a) => !a.dead && !isBlocked(a));
+    if (last?.kind === 'quota') {
+      failed.push({ key: t.key, tool: t.tool, label: t.label, message: last.message, quotaExceeded: true, permissionDenied: false });
+    } else if (permissionMessage) {
+      failed.push({ key: t.key, tool: t.tool, label: t.label, message: permissionMessage, quotaExceeded: false, permissionDenied: true });
+    } else if (usable.length && usable.every((a) => a.denied[t.tool])) {
+      mark('permission', { message: usable[0].denied[t.tool]?.message || '所有账号均未开通该工具' });
+    } else if (allBlocked()) {
+      mark('quota', { message: `今日 ${accounts.length} 个账号的额度均已用尽` });
+    } else if (!usable.length && accounts.some((a) => a.dead)) {
+      mark('unavailable', { message: accounts.find((a) => a.deadReason)?.deadReason || '账号不可用' });
+    } else if (!usable.length) {
+      mark('quota', { message: '今日可用账号的额度均已用尽' });
+    } else {
+      mark('unavailable', { message: last?.message || '账号不可用' });
     }
   }
+
+  // 权限记忆（按账号）：以「已记录的权限记忆」为基线维护——
+  // 本轮成功的工具移出该账号的黑名单（可能已升级套餐）；本轮新发现 403 的记入；
+  // 因额度熔断/缓存而没真正探测过的工具保持原状（否则中断的一轮会把记忆抹掉，下轮又白调一轮）
+  const nextDenied = {};
+  for (const st of accounts) {
+    const base = { ...(deniedLoaded[st.fp] || {}), ...(deniedNow[st.fp] || {}) };
+    for (const tool of okByFp.get(st.fp) || []) delete base[tool];
+    if (Object.keys(base).length) nextDenied[st.fp] = base;
+  }
+  await saveDeniedTools(nextDenied);
+
+  // 额度标记（按账号）：命中的记今日日期（次日自动失效）；本轮成功取数的账号说明还有额度，清掉标记
+  for (const st of accounts) {
+    if (isBlocked(st)) {
+      await persistSetting(tokenQuotaKey(st.fp), today, '天眼AI 该账号今日额度已用尽（次日自动失效）');
+    } else if (okByFp.has(st.fp)) {
+      await db.run('DELETE FROM sys_setting WHERE setting_key = ?', [tokenQuotaKey(st.fp)]);
+    }
+  }
+  // 旧版全局额度标记已迁移到账号维度，删掉避免重复判断
+  await db.run('DELETE FROM sys_setting WHERE setting_key = ?', [QUOTA_SETTING_KEY]);
+
+  // key 无效/连不上的账号：记下来避免每次同步白连；本轮连上了就移除记录
+  const nextBad = {};
+  for (const st of accounts) {
+    if (st.client) continue;
+    if (badNow[st.fp]) nextBad[st.fp] = badNow[st.fp];
+    else if (badLoaded[st.fp]) nextBad[st.fp] = badLoaded[st.fp];
+  }
+  await saveBadTokens(nextBad);
 
   // 用登记信息回填工商字段（只补空，不覆盖已人工核实的内容）
   const profile = await getTycProfile(pid);
@@ -340,6 +678,7 @@ export async function syncTycProfile(partnerId, companyName) {
   return {
     synced: done,
     failed,
+    skipped,
     warnings: [...new Set(warnings)],
     dimensions,
     summary: {
@@ -347,12 +686,29 @@ export async function syncTycProfile(partnerId, companyName) {
       ok: done.length,
       failed: failed.length,
       permissionDenied: failed.filter((f) => f.permissionDenied).length,
+      quotaExceeded: failed.filter((f) => f.quotaExceeded).length,
+      skipped: skipped.length,
+      skippedCache: skipped.filter((s) => s.reason === 'cache').length,
+      skippedPermission: skipped.filter((s) => s.reason === 'permission').length,
+      skippedQuota: skipped.filter((s) => s.reason === 'quota').length,
+      skippedUnavailable: skipped.filter((s) => s.reason === 'unavailable').length,
+      called,
+      accounts: accounts.length,
+      availableAccounts: accounts.filter((a) => !a.dead && !isBlocked(a)).length,
+      cacheHours: RAW_CACHE_HOURS,
+      forced: force,
     },
-    // 便于排查：服务端到底暴露了多少工具、其中哪些是本次动态发现的
+    // 便于排查：服务端到底暴露了多少工具、其中哪些是本次动态发现的、各账号状态如何
     toolsInfo: {
       available: names.length,
       used: tools.length,
       discovered: extras.map((e) => e.tool),
+      accounts: accounts.map((a) => ({
+        index: a.index,
+        quotaExhaustedToday: isBlocked(a),
+        unusable: a.dead,
+        deniedTools: Object.keys(a.denied).length,
+      })),
     },
     profile,
   };
@@ -499,6 +855,32 @@ export async function getTycProfile(partnerId) {
     [pid, TYC_SOURCE, pid, TYC_SOURCE, pid, TYC_SOURCE],
   );
 
+  // 节流状态：让页面知道「哪些工具因权益被跳过」「今天还有几个账号有额度」，
+  // 不必等用户再点一次同步才发现又要失败。
+  const tokens = tokenList();
+  const fps = tokens.map(tokenFp);
+  const { denied, quota, bad } = await loadToolPolicy(tokens);
+  const today = localDateStr();
+  const blockedCount = fps.filter((fp) => quota[fp] === today).length;
+  const invalidList = fps
+    .map((fp, i) => ({ index: i + 1, message: bad[fp]?.message || null }))
+    .filter((x) => x.message);
+  // 任一号被 403 的工具都列出来（同步时会自动换号，换不到才最终跳过）
+  const deniedList = (() => {
+    const merged = new Map();
+    for (const fp of fps) {
+      for (const [tool, info] of Object.entries(denied[fp] || {})) {
+        if (!merged.has(tool)) merged.set(tool, info);
+      }
+    }
+    return [...merged.entries()].map(([tool, info]) => ({
+      tool,
+      label: toolLabelOf(tool),
+      at: info?.at || null,
+      message: info?.message || null,
+    }));
+  })();
+
   return {
     configured: isTycConfigured(),
     syncedAt,
@@ -515,6 +897,15 @@ export async function getTycProfile(partnerId) {
       : null,
     iprScore: iprRaw && !iprRaw.markdown ? iprRaw : null,
     rawKeys: Object.keys(latest),
+    toolPolicy: {
+      cacheHours: RAW_CACHE_HOURS,
+      deniedTtlDays: DENIED_TTL_DAYS,
+      accounts: tokens.length,
+      availableAccounts: Math.max(0, tokens.length - blockedCount - invalidList.length),
+      quotaExhaustedToday: tokens.length > 0 && blockedCount === tokens.length,
+      invalidAccounts: invalidList,
+      denied: deniedList,
+    },
   };
 }
 

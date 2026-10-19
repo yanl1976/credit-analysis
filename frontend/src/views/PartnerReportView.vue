@@ -38,6 +38,15 @@
           >
             重算评分
           </el-button>
+          <el-button-group class="nav-group">
+            <el-button :disabled="!neighbors.prev" title="上一条（客户列表中更靠前）" @click="goNeighbor('prev')">
+              ↑ 上一条
+            </el-button>
+            <el-button :disabled="!neighbors.next" title="下一条（客户列表中更靠后）" @click="goNeighbor('next')">
+              下一条 ↓
+            </el-button>
+          </el-button-group>
+          <span v-if="neighbors.total" class="nav-pos">{{ neighbors.index }} / {{ neighbors.total }}</span>
         </div>
       </div>
     </div>
@@ -110,9 +119,13 @@
             >
               重解析已同步数据
             </el-button>
+            <el-checkbox v-model="tycForce" :disabled="tycLoading" size="small" style="margin-right: 8px">
+              强制重新调用
+            </el-checkbox>
             <span class="hint">
               基础画像 4 项（工商登记/简介/风险总览/创新力评分）+ 风险明细 11 项（失信/限高/被执行/裁判文书/经营异常/严重违法/行政处罚/税收违法/欠税公告/财务数据/企业规模）；
-              明细需 VIP 权益，未开通的工具自动跳过并提示，不影响其余项。
+              明细需 VIP 权益。同步默认节流：{{ tyc?.toolPolicy?.cacheHours ?? 24 }} 小时内已取过的工具直接复用缓存，
+              已知无权限的工具不再重复调用，额度用尽自动切换下一个账号；勾选「强制重新调用」可忽略缓存与权限记忆（套餐升级后补齐数据用）。
             </span>
             <span v-if="tyc && tyc.syncedAt" class="tyc-sync-time">最后同步 {{ tyc.syncedAt }}</span>
           </div>
@@ -120,10 +133,40 @@
             已落库天眼AI 明细：司法 {{ tyc.dimensions.judicial }} 条 · 合规 {{ tyc.dimensions.credit }} 条 · 财务 {{ tyc.dimensions.finance }} 条
             <span style="margin-left: 6px">（明细直接参与评分，「重解析已同步数据」不会再次调用天眼AI）</span>
           </div>
+          <div v-if="tyc && tyc.toolPolicy?.accounts" class="hint" style="margin-bottom: 8px">
+            天眼AI 账号池：已配置 {{ tyc.toolPolicy.accounts }} 个账号，今日可用 {{ tyc.toolPolicy.availableAccounts }} 个；某个账号额度用尽或未开通某工具时自动切换到下一个。
+            <span v-if="tyc.toolPolicy.invalidAccounts?.length" style="color: #f56c6c; margin-left: 6px">
+              其中 {{ tyc.toolPolicy.invalidAccounts.length }} 个账号 key 无效/连不上（第
+              {{ tyc.toolPolicy.invalidAccounts.map((a) => a.index).join('、') }} 个），请检查 .env 的 TIANYANCHA_MCP_TOKENS。
+            </span>
+          </div>
+          <el-alert
+            v-if="tyc && tyc.toolPolicy?.quotaExhaustedToday"
+            type="error"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 8px"
+            :title="`今日 ${tyc.toolPolicy.accounts} 个天眼AI 账号的额度均已用尽：同步会直接跳过全部工具，等次日配额重置或升级套餐后再同步。`"
+          />
+          <el-alert
+            v-if="tyc && tyc.toolPolicy?.denied?.length"
+            type="warning"
+            :closable="false"
+            show-icon
+            style="margin-bottom: 8px"
+          >
+            <template #title>
+              有 {{ tyc.toolPolicy.denied.length }} 项工具因账号权益未开通被跳过，同步时不再重复调用（也不占用额度）
+            </template>
+            <div class="tyc-denied-list">{{ tycDeniedText }}</div>
+            <div class="hint">
+              升级 VIP/SVIP 后可勾选「强制重新调用」立即补齐；否则 {{ tyc.toolPolicy.deniedTtlDays }} 天后会自动重试探测。
+            </div>
+          </el-alert>
 
           <el-empty
             v-if="!tyc || !tyc.syncedAt"
-            :description="tyc && !tyc.configured ? '未配置天眼AI 访问令牌（TIANYANCHA_MCP_TOKEN）' : '尚未同步企业画像数据'"
+            :description="tyc && !tyc.configured ? '未配置天眼AI 访问令牌（TIANYANCHA_MCP_TOKEN / TIANYANCHA_MCP_TOKENS）' : '尚未同步企业画像数据'"
           />
 
           <template v-else>
@@ -227,7 +270,7 @@
                 司法 {{ tycRisk.judicialTotal }} 条 · 合规 {{ tycRisk.creditTotal }} 条；手工录入与其他渠道的记录请到「司法信息」「信用/合规」页签查看。
                 <span v-if="!tycRisk.hasData">
                   当前 0 条：若只同步过基础画像（4 项），需重新点「同步企业画像」才会拉取 11 项风险明细；
-                  若已同步仍为 0，则是工具权益未开通，或该企业确无公开记录。
+                  若已同步仍为 0，则是工具权益未开通、今日调用额度已用尽，或该企业确无公开记录（同步结果的提示里会写明是哪一种）。
                 </span>
               </div>
             </div>
@@ -530,7 +573,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ElMessageBox } from 'element-plus';
 import { ElMessage } from '../utils/feedback.js';
 import { partnerApi, aiApi } from '../api/index.js';
@@ -549,8 +592,32 @@ import {
 } from '../utils/tyc-summary.js';
 
 const route = useRoute();
+const router = useRouter();
 const auth = useAuthStore();
 const id = Number(route.params.id);
+
+// 上下换页：沿用客户列表顺序（id DESC），检索词随列表带入，避免切换后跳出筛选范围
+const neighbors = reactive({ prev: null, next: null, index: 0, total: 0 });
+
+async function loadNeighbors() {
+  try {
+    const keyword = route.query.keyword ? String(route.query.keyword) : undefined;
+    Object.assign(neighbors, await partnerApi.neighbors(id, keyword));
+  } catch {
+    Object.assign(neighbors, { prev: null, next: null, index: 0, total: 0 });
+  }
+}
+
+function goNeighbor(dir) {
+  const target = dir === 'prev' ? neighbors.prev : neighbors.next;
+  if (!target) return;
+  const keyword = route.query.keyword;
+  router.push({
+    name: 'partner-report',
+    params: { id: target.id },
+    query: keyword ? { keyword: String(keyword) } : {},
+  });
+}
 
 const loading = ref(false);
 const collecting = ref(false);
@@ -572,6 +639,8 @@ const finance = ref([]);
 const tyc = ref(null);
 const tycLoading = ref(false);
 const tycResyncLoading = ref(false);
+// 忽略缓存与权限记忆，强制全量重调（套餐升级后补齐数据用，会真实消耗额度）
+const tycForce = ref(false);
 // 东方财富财报同步
 const emStockCode = ref('');
 const emListedStatus = ref('母公司上市');
@@ -580,6 +649,10 @@ const emLoading = ref(false);
 // 企业画像内容：只统计 data_source='tyc_mcp' 的明细，避免手工/AI 记录混入天眼AI 口径
 const tycRisk = computed(() => summarizeTycRisk(judicial.value, credit.value));
 const tycFiscal = computed(() => parseTycFiscal(finance.value));
+// 被账号权益挡掉的工具（后端记忆，跨客户共享）：列出名称让用户知道缺了什么
+const tycDeniedText = computed(() =>
+  (tyc.value?.toolPolicy?.denied || []).map((d) => d.label || d.tool).join('、'),
+);
 
 // 手工录入字段定义（与后端维度表字段一一对应）
 const DIM_FIELD_DEFS = {
@@ -794,20 +867,44 @@ function waitAiJob(jobId) {
 }
 
 // 同步天眼AI：基础画像 4 项 + P0 风险明细 11 项，后端同步后自动重算评分
+// 后端默认节流：缓存命中/已知无权限/额度用尽都会跳过，只有真正需要的工具才发起调用
 async function syncTyc() {
   tycLoading.value = true;
   try {
-    const res = await partnerApi.tycSync(id);
-    const ok = res?.summary?.ok ?? (res?.synced?.length || 0);
+    const res = await partnerApi.tycSync(id, tycForce.value ? { force: true } : null);
+    const s = res?.summary || {};
+    const ok = s.ok ?? (res?.synced?.length || 0);
     const failed = res?.failed || [];
+    const called = s.called ?? ok;
     const denied = failed.filter((f) => f.permissionDenied).length;
+    const quota = failed.filter((f) => f.quotaExceeded).length;
     const dim = res?.dimensions || {};
-    const dimText = `，新增明细 司法 ${dim.judicial || 0} / 合规 ${dim.credit || 0} / 财务 ${dim.finance || 0}`;
+    const skipParts = [
+      s.skippedCache ? `已缓存 ${s.skippedCache}` : null,
+      s.skippedPermission ? `无权限 ${s.skippedPermission}` : null,
+      s.skippedQuota ? `额度用尽 ${s.skippedQuota}` : null,
+      s.skippedUnavailable ? `账号不可用 ${s.skippedUnavailable}` : null,
+    ].filter(Boolean);
+
+    const parts = [`成功 ${ok} 项`, `发起调用 ${called} 次（成功取数才计入额度）`];
+    if (s.accounts > 1) parts.push(`账号池 ${s.availableAccounts}/${s.accounts} 可用`);
+    if (skipParts.length) parts.push(`跳过 ${skipParts.join(' / ')} 项`);
     if (failed.length) {
-      const deny = denied ? `（其中 ${denied} 项为权益未开通，需 VIP）` : '';
-      ElMessage.warning(`成功 ${ok} 项、失败 ${failed.length} 项${deny}${dimText}；首个失败：${failed[0].label || failed[0].key} - ${failed[0].message}`);
+      const reasons = [denied ? `${denied} 项权益未开通（需 VIP）` : null, quota ? `${quota} 项今日额度已用尽` : null]
+        .filter(Boolean)
+        .join(' / ');
+      parts.push(`失败 ${failed.length} 项${reasons ? `（${reasons}）` : ''}`);
+    }
+    parts.push(`新增/更新明细 司法 ${dim.judicial || 0} / 合规 ${dim.credit || 0} / 财务 ${dim.finance || 0}`);
+    const msg = parts.join('，');
+
+    if (failed.length) {
+      ElMessage.warning(`${msg}；首个失败：${failed[0].label || failed[0].key} - ${failed[0].message}`);
+    } else if (!called) {
+      // 一次都没调：全部走缓存或权限跳过，额度零消耗
+      ElMessage.info(`${msg}（未消耗调用额度）`);
     } else {
-      ElMessage.success(`同步 ${ok} 项${dimText}，评分已重算`);
+      ElMessage.success(`${msg}，评分已重算`);
     }
     await loadAll();
   } catch (e) {
@@ -907,7 +1004,10 @@ async function handleAiCollect() {
   }
 }
 
-onMounted(loadAll);
+onMounted(() => {
+  loadAll();
+  loadNeighbors();
+});
 
 onUnmounted(() => {
   if (aiPollTimer) clearTimeout(aiPollTimer);
@@ -926,7 +1026,13 @@ onUnmounted(() => {
 }
 .head-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.nav-pos {
+  color: #909399;
+  font-size: 12px;
+  white-space: nowrap;
 }
 .score-row {
   display: flex;
@@ -1027,6 +1133,13 @@ onUnmounted(() => {
   margin-left: auto;
   font-size: 12px;
   color: #909399;
+}
+.tyc-denied-list {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #b88230;
+  word-break: break-all;
 }
 .tyc-hero {
   padding: 12px 14px;

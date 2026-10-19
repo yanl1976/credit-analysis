@@ -26,11 +26,11 @@
       <span class="hint">共 {{ total }} 个客户</span>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border stripe>
+    <el-table v-loading="loading" :data="rows" border stripe class="partner-table">
       <el-table-column prop="name" label="客户名称" min-width="220" show-overflow-tooltip />
-      <el-table-column prop="credit_code" label="统一社会信用代码" width="200" />
-      <el-table-column prop="legal_person" label="法定代表人" width="120" />
-      <el-table-column label="工商状态" width="110">
+      <el-table-column prop="credit_code" label="统一社会信用代码" min-width="180" show-overflow-tooltip />
+      <el-table-column prop="legal_person" label="法定代表人" min-width="100" show-overflow-tooltip />
+      <el-table-column label="工商状态" min-width="100" show-overflow-tooltip>
         <template #default="{ row }">
           <el-tag v-if="row.reg_status" size="small" :type="isRiskyStatus(row.reg_status) ? 'danger' : 'success'">
             {{ row.reg_status }}
@@ -38,14 +38,25 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="数据来源" width="110">
+      <el-table-column label="信用评分" min-width="130" align="center">
+        <template #default="{ row }">
+          <el-tooltip v-if="hasRating(row)" :content="ratingTip(row)" placement="top">
+            <span class="score-cell">
+              <span class="score-num" :class="scoreClass(row)">{{ row.rating_score }}</span>
+              <el-tag size="small" :type="gradeTagType(row.rating_grade)" effect="plain">{{ row.rating_grade }}</el-tag>
+            </span>
+          </el-tooltip>
+          <span v-else class="score-empty">未评分</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="数据来源" min-width="100" show-overflow-tooltip>
         <template #default="{ row }">
           <el-tag size="small" :type="sourceTagType(row.data_source)">{{ sourceLabel(row.data_source) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="industry" label="行业" width="120" />
-      <el-table-column prop="province" label="省份" width="100" />
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column prop="industry" label="行业" min-width="120" show-overflow-tooltip />
+      <el-table-column prop="province" label="省份" min-width="80" show-overflow-tooltip />
+      <el-table-column label="操作" min-width="230" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openReport(row)">资信报告</el-button>
           <el-button
@@ -158,7 +169,7 @@ import { ElMessageBox } from 'element-plus';
 import { ElMessage } from '../utils/feedback.js';
 import { partnerApi, authApi, orgApi, settingApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
-import { sourceLabel, sourceTagType } from '../utils/grade.js';
+import { sourceLabel, sourceTagType, gradeTagType } from '../utils/grade.js';
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -195,6 +206,24 @@ const form = reactive({
 
 function isRiskyStatus(status) {
   return /吊销|注销|停业/.test(status || '');
+}
+
+// 信用评分列：有评分才显示分数+等级，未评分给明确占位（0 分是合法值，不能用真假判断）
+function hasRating(row) {
+  return row?.rating_score !== null && row?.rating_score !== undefined;
+}
+
+function scoreClass(row) {
+  const score = Number(row?.rating_score);
+  if (score >= 80) return 'score-good';
+  if (score >= 60) return 'score-mid';
+  return 'score-bad';
+}
+
+function ratingTip(row) {
+  const risk = row?.rating_risk_level || '-';
+  const at = row?.rating_calculated_at || '-';
+  return `风险等级：${risk} · 计算时间：${at}`;
 }
 
 async function load(p = page.value) {
@@ -276,7 +305,12 @@ async function handleCreate() {
 }
 
 function openReport(row) {
-  router.push({ name: 'partner-report', params: { id: row.id } });
+  // 带上当前检索词，报告页的「上一条/下一条」会在同一筛选范围内翻页
+  router.push({
+    name: 'partner-report',
+    params: { id: row.id },
+    query: keyword.value ? { keyword: keyword.value } : {},
+  });
 }
 
 async function handleRate(row) {
@@ -343,6 +377,31 @@ onMounted(async () => {
   color: #909399;
   font-size: 13px;
   margin-left: auto;
+}
+/* 列不换行 + 按 min-width 自适应；内容超长由 show-overflow-tooltip 提供悬浮提示 */
+.partner-table :deep(.el-table__cell .cell) {
+  white-space: nowrap;
+}
+.score-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.score-num {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.score-good {
+  color: #67c23a;
+}
+.score-mid {
+  color: #e6a23c;
+}
+.score-bad {
+  color: #f56c6c;
+}
+.score-empty {
+  color: #909399;
 }
 .pager {
   margin-top: 14px;
