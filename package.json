@@ -1,0 +1,20 @@
+{
+  "name": "credit-analysis",
+  "version": "0.1.0",
+  "description": "合作方资信分析系统（客户为主/国内/纯外部数据/集团+多级子公司权限）",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node src/migrate.js",
+    "seed": "node src/seed.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "knex": "^3.1.0",
+    "sqlite3": "^5.1.7"
+  }
+}
