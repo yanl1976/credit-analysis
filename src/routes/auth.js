@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import * as authService from '../services/auth-service.js';
 import { authenticate } from '../middleware/auth.js';
+import { dataScope } from '../middleware/data-scope.js';
 
 const router = Router();
 
@@ -29,6 +30,11 @@ router.post('/logout', (req, res) => {
 
 router.get('/me', authenticate, (req, res) => {
   res.json({ code: 0, data: req.user });
+});
+
+// 当前用户的数据作用域（调试/前端初始化用）
+router.get('/scope', authenticate, dataScope, (req, res) => {
+  res.json({ code: 0, data: req.scope });
 });
 
 export default router;
