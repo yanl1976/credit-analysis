@@ -4,7 +4,13 @@ import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
 import { requirePerm } from '../middleware/permission.js';
 import * as collectService from '../services/collect-service.js';
-import { calculateScore, ratePartner, getRating, getRatingHistory } from '../services/scoring-service.js';
+import {
+  calculateScore,
+  ratePartner,
+  rateBatch,
+  getRating,
+  getRatingHistory,
+} from '../services/scoring-service.js';
 
 const router = Router();
 
@@ -40,6 +46,20 @@ router.post('/', requirePerm('customer:manage'), async (req, res, next) => {
       : Number(req.user.orgId);
     const partner = await partnerService.createPartner({ ...body, ownerOrgId });
     res.json({ code: 0, data: partner });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 批量重算（report:view）：不传 partnerIds 则按数据作用域全量重算
+router.post('/rate-batch', requirePerm('report:view'), async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const partnerIds = Array.isArray(body.partnerIds) ? body.partnerIds : null;
+    res.json({
+      code: 0,
+      data: await rateBatch({ partnerIds, orgIds: req.scope.orgIds }),
+    });
   } catch (e) {
     next(e);
   }

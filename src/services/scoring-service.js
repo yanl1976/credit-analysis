@@ -244,3 +244,62 @@ export async function ratePartner(partnerId) {
     gradeChanged,
   };
 }
+
+// 批量重算：partnerIds 与 orgIds 同时给出时取交集；orgIds=null 表示不限组织（仅集团管理员）
+export async function rateBatch({ partnerIds = null, orgIds = null } = {}) {
+  const where = [];
+  const params = [];
+  const ids = Array.isArray(partnerIds)
+    ? partnerIds.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0)
+    : [];
+  if (Array.isArray(partnerIds) && ids.length === 0) {
+    return { total: 0, succeeded: 0, failed: 0, gradeChanged: 0, changes: [], failures: [], distribution: {} };
+  }
+  if (ids.length) {
+    where.push(`id IN (${ids.map(() => '?').join(',')})`);
+    params.push(...ids);
+  }
+  if (Array.isArray(orgIds)) {
+    if (!orgIds.length) {
+      return { total: 0, succeeded: 0, failed: 0, gradeChanged: 0, changes: [], failures: [], distribution: {} };
+    }
+    where.push(`owner_org_id IN (${orgIds.map(() => '?').join(',')})`);
+    params.push(...orgIds.map(Number));
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = await db.all(`SELECT id FROM partner ${whereSql} ORDER BY id`, params);
+
+  let succeeded = 0;
+  const failures = [];
+  const changes = [];
+  const distribution = {};
+
+  for (const row of rows) {
+    try {
+      const res = await ratePartner(Number(row.id));
+      succeeded++;
+      distribution[res.grade] = (distribution[res.grade] || 0) + 1;
+      if (res.gradeChanged) {
+        changes.push({
+          partnerId: res.partnerId,
+          oldGrade: res.previous?.grade ?? null,
+          newGrade: res.grade,
+          oldScore: res.previous?.score ?? null,
+          newScore: res.score,
+        });
+      }
+    } catch (e) {
+      failures.push({ partnerId: Number(row.id), message: e.message });
+    }
+  }
+
+  return {
+    total: rows.length,
+    succeeded,
+    failed: failures.length,
+    gradeChanged: changes.length,
+    changes,
+    failures,
+    distribution,
+  };
+}
