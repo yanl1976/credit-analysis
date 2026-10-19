@@ -1,60 +1,61 @@
 import 'dotenv/config';
-import fs from 'fs';
-import path from 'path';
+import mysql from 'mysql2/promise';
 
-// 统一数据访问层：屏蔽底层引擎差异，业务代码只调用 all/get/run/exec。
-//  - 开发期：Node 24 内置 node:sqlite（零原生依赖、无需编译）
-//  - 信创期：Knex(pg / mysql2)（人大金仓/达梦兼容协议）。切换时只需补全此分支，业务代码零改动。
-const client = (process.env.DB_CLIENT || 'sqlite3').toLowerCase();
+// 统一数据访问层（MySQL 8 / mysql2 驱动，纯 JS 无需编译）
+// 业务代码只调用 db.all/get/run/exec；信创期切换达梦/人大金仓（MySQL 兼容协议）时仅需改连接参数。
+const host = process.env.DB_HOST || '127.0.0.1';
+const port = Number(process.env.DB_PORT || 3306);
+const user = process.env.DB_USER || 'root';
+const password = process.env.DB_PASSWORD || '';
+const database = process.env.DB_NAME || 'credit_analysis';
 
-async function buildDb() {
-  if (client === 'sqlite3' || client === 'sqlite') {
-    const { DatabaseSync } = await import('node:sqlite');
-    const file = process.env.DB_FILENAME || './data/credit_analysis.sqlite';
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const native = new DatabaseSync(file);
-    native.exec('PRAGMA journal_mode = WAL;');
-    return {
-      engine: 'node:sqlite',
-      all: (sql, params = []) => native.prepare(sql).all(...params),
-      get: (sql, params = []) => native.prepare(sql).get(...params),
-      run: (sql, params = []) => native.prepare(sql).run(...params),
-      exec: (sql) => native.exec(sql),
-      close: () => native.close(),
-    };
+// 先确保目标数据库存在（连接时不指定 database，避免库不存在直接失败）
+async function ensureDatabase() {
+  const conn = await mysql.createConnection({ host, port, user, password });
+  try {
+    await conn.query(
+      `CREATE DATABASE IF NOT EXISTS \`${database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci`,
+    );
+  } finally {
+    await conn.end();
   }
-
-  if (client === 'pg' || client === 'mysql2') {
-    const knex = (await import('knex')).default;
-    const k = knex({
-      client,
-      connection: {
-        host: process.env.DB_HOST,
-        port: Number(process.env.DB_PORT || (client === 'pg' ? 5432 : 3306)),
-        database: process.env.DB_NAME,
-        user: process.env.DB_USER,
-        password: process.env.DB_PASSWORD,
-      },
-    });
-    return {
-      engine: client,
-      all: (sql, params = []) => k.raw(sql, params).then((r) => r.rows ?? r),
-      get: (sql, params = []) => k.raw(sql, params).then((r) => (r.rows ?? r)[0]),
-      run: (sql, params = []) =>
-        k.raw(sql, params).then((r) => ({
-          changes: r.rowCount ?? r.affectedRows ?? 0,
-          lastInsertRowid: r.insertId ?? (r.rows && r.rows.insertId) ?? 0,
-        })),
-      exec: (sql) => k.raw(sql).then(() => {}),
-      close: () => k.destroy(),
-    };
-  }
-
-  throw new Error(`不支持的 DB_CLIENT: ${client}`);
 }
 
-// 模块加载时即完成初始化（顶层 await，Node ESM 支持）
-const db = await buildDb();
+await ensureDatabase();
+
+const pool = mysql.createPool({
+  host,
+  port,
+  user,
+  password,
+  database,
+  waitForConnections: true,
+  connectionLimit: 10,
+  charset: 'utf8mb4',
+  namedPlaceholders: false,
+});
+
+const db = {
+  engine: 'mysql2',
+  all: async (sql, params = []) => {
+    const [rows] = await pool.query(sql, params);
+    return rows;
+  },
+  get: async (sql, params = []) => {
+    const [rows] = await pool.query(sql, params);
+    return rows[0];
+  },
+  run: async (sql, params = []) => {
+    const [result] = await pool.query(sql, params);
+    return {
+      changes: result.affectedRows ?? 0,
+      lastInsertRowid: result.insertId ?? 0,
+    };
+  },
+  exec: async (sql) => {
+    await pool.query(sql);
+  },
+  close: () => pool.end(),
+};
+
 export default db;
-export { client as dbClient };

@@ -5,15 +5,15 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node --experimental-sqlite src/server.js",
-    "migrate": "node --experimental-sqlite src/migrate.js",
-    "seed": "node --experimental-sqlite src/seed.js"
+    "start": "node src/server.js",
+    "migrate": "node src/migrate.js",
+    "seed": "node src/seed.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
-    "knex": "^3.1.0"
+    "mysql2": "^3.11.3"
   }
 }
