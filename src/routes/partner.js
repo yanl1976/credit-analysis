@@ -27,14 +27,121 @@ function inScope(scope, ownerOrgId) {
 
 router.get('/', async (req, res, next) => {
   try {
-    const { keyword, page, pageSize } = req.query;
+    const { keyword, admissionStatus, reviewStatus, page, pageSize } = req.query;
     const data = await partnerService.listPartners({
       orgIds: req.scope.orgIds,
       keyword,
+      admissionStatus,
+      reviewStatus,
       page,
       pageSize,
     });
     res.json({ code: 0, data });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 风险名单汇总：正常 / 关注 / 重点监控 / 黑名单
+router.get('/admission-stats', async (req, res, next) => {
+  try {
+    res.json({ code: 0, data: await partnerService.getAdmissionStats({ orgIds: req.scope.orgIds }) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 定期复审统计：逾期 / 临期 / 未排期（看板与列表页提示共用）
+router.get('/review-stats', async (req, res, next) => {
+  try {
+    res.json({
+      code: 0,
+      data: await partnerService.getReviewStats({
+        orgIds: req.scope.orgIds,
+        dueSoonDays: req.query.dueSoonDays,
+      }),
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// CSV 辅助：转义逗号/引号/换行，Excel 打开不乱码靠 UTF-8 BOM
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function toCsv(headers, rows) {
+  const lines = [headers.map(csvCell).join(',')];
+  for (const r of rows) lines.push(r.map(csvCell).join(','));
+  return `\uFEFF${lines.join('\r\n')}`;
+}
+
+const REVIEW_LABELS = {
+  unscheduled: '未排期',
+  overdue: '已逾期',
+  dueSoon: '临期',
+  scheduled: '已排期',
+};
+
+// 客户清单导出（CSV，按当前筛选范围；超过上限会标注 truncated）
+router.get('/export', async (req, res, next) => {
+  try {
+    const { keyword, admissionStatus, reviewStatus, limit } = req.query;
+    const { items, total, truncated } = await partnerService.listPartnersForExport({
+      orgIds: req.scope.orgIds,
+      keyword,
+      admissionStatus,
+      reviewStatus,
+      limit,
+    });
+    const headers = [
+      '客户名称',
+      '统一社会信用代码',
+      '法定代表人',
+      '工商状态',
+      '省份',
+      '行业',
+      '归属组织',
+      '准入状态',
+      '信用评分',
+      '信用等级',
+      '风险等级',
+      '下次复审日期',
+      '复审状态',
+      '数据来源',
+      '创建时间',
+    ];
+    const rows = items.map((p) => [
+      p.name,
+      p.credit_code,
+      p.legal_person,
+      p.reg_status,
+      p.province,
+      p.industry,
+      p.org_name,
+      partnerService.ADMISSION_LABELS[p.admission_status] || '正常',
+      p.rating_score,
+      p.rating_grade,
+      p.rating_risk_level,
+      p.next_review_date,
+      REVIEW_LABELS[p.review_status] || '',
+      p.data_source,
+      p.created_at,
+    ]);
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.json({
+      code: 0,
+      data: {
+        filename: `客户清单_${stamp}.csv`,
+        content: toCsv(headers, rows),
+        total,
+        exported: items.length,
+        truncated,
+      },
+    });
   } catch (e) {
     next(e);
   }
@@ -70,12 +177,67 @@ router.post('/rate-batch', requirePerm('report:view'), async (req, res, next) =>
 
 router.get('/:id', async (req, res, next) => {
   try {
-    const partner = await partnerService.getPartner(Number(req.params.id));
+    const partner = await partnerService.getPartnerDetail(Number(req.params.id));
     if (!partner) return res.status(404).json({ code: 404, message: '客户不存在' });
     if (!inScope(req.scope, partner.owner_org_id)) {
       return res.status(403).json({ code: 403, message: '无权访问该客户' });
     }
     res.json({ code: 0, data: partner });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 单客户资信报告导出（CSV）：基本信息 + 评分明细，便于线下评审留档
+router.get('/:id/report-export', requirePerm('report:view'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const p = await partnerService.getPartnerDetail(id);
+    if (!p) return res.status(404).json({ code: 404, message: '客户不存在' });
+    if (!inScope(req.scope, p.owner_org_id)) {
+      return res.status(403).json({ code: 403, message: '无权访问该客户' });
+    }
+    const info = [
+      ['客户名称', p.name],
+      ['统一社会信用代码', p.credit_code],
+      ['法定代表人', p.legal_person],
+      ['工商状态', p.reg_status],
+      ['省份', p.province],
+      ['行业', p.industry],
+      ['归属组织', p.org_name],
+      ['准入状态', partnerService.ADMISSION_LABELS[p.admission_status] || '正常'],
+      ['下次复审日期', p.next_review_date],
+      ['信用评分', p.rating_score],
+      ['信用等级', p.rating_grade],
+      ['风险等级', p.rating_risk_level],
+      ['是否触发一票否决', Number(p.rating_veto) ? '是' : '否'],
+      ['评分口径版本', p.rating_calc_version],
+      ['评分时间', p.rating_calculated_at],
+    ];
+    let reasons = [];
+    try {
+      reasons = p.rating_reasons ? JSON.parse(p.rating_reasons) : [];
+    } catch {
+      reasons = [];
+    }
+    const deductions = (Array.isArray(reasons) ? reasons : [])
+      .filter((r) => Number(r?.delta) < 0)
+      .map((r) => [r.category || '', r.delta, r.reason || '']);
+
+    const lines = ['项目,内容'];
+    for (const [k, v] of info) lines.push([k, v].map(csvCell).join(','));
+    lines.push('');
+    lines.push('扣分类别,分值,说明');
+    if (deductions.length) for (const r of deductions) lines.push(r.map(csvCell).join(','));
+    else lines.push('无扣分项,,');
+    lines.push('');
+    lines.push('导出时间,' + new Date().toISOString().slice(0, 19).replace('T', ' '));
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.json({
+      code: 0,
+      data: { filename: `资信报告_${p.name}_${stamp}.csv`, content: `\uFEFF${lines.join('\r\n')}` },
+    });
   } catch (e) {
     next(e);
   }
@@ -93,6 +255,8 @@ router.get('/:id/neighbors', async (req, res, next) => {
     const data = await partnerService.getNeighborPartners(id, {
       orgIds: req.scope.orgIds,
       keyword: req.query.keyword,
+      admissionStatus: req.query.admissionStatus,
+      reviewStatus: req.query.reviewStatus,
     });
     res.json({ code: 0, data });
   } catch (e) {

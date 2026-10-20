@@ -20,6 +20,19 @@
       </div>
     </div>
 
+    <el-alert
+      v-if="data.review && (data.review.overdue > 0 || data.review.dueSoon > 0)"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="review-alert"
+      :title="`定期复审提醒：逾期 ${data.review.overdue} 家，临期（${data.review.warnDays} 天内）${data.review.dueSoon} 家`"
+    >
+      <span>另有 {{ data.review.unscheduled }} 家尚未安排复审日期。</span>
+      <el-link type="primary" class="ml8" @click="goReview('overdue')">查看逾期待复审</el-link>
+      <el-link type="primary" class="ml8" @click="goReview('dueSoon')">查看临期</el-link>
+    </el-alert>
+
     <div class="grid">
       <div class="page-card">
         <div class="card-title">信用等级分布</div>
@@ -54,6 +67,19 @@
           </span>
         </div>
         <el-divider />
+        <div class="kv">
+          <span class="k">风险名单</span>
+          <span class="v">
+            <el-tag
+              v-for="a in data.admission?.items || []"
+              :key="a.status"
+              :type="admissionTagType(a.status)"
+              class="mr6"
+            >
+              {{ a.label }} {{ a.count }}
+            </el-tag>
+          </span>
+        </div>
         <div class="kv"><span class="k">司法记录</span><span class="v">{{ data.dimensionTotals?.judicial }} 条</span></div>
         <div class="kv"><span class="k">信用/合规记录</span><span class="v">{{ data.dimensionTotals?.credit }} 条</span></div>
         <div class="kv"><span class="k">财务线索</span><span class="v">{{ data.dimensionTotals?.finance }} 条</span></div>
@@ -116,7 +142,7 @@
 import { onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { dashboardApi } from '../api/index.js';
-import { gradeTagType, riskTagType } from '../utils/grade.js';
+import { gradeTagType, riskTagType, admissionTagType } from '../utils/grade.js';
 
 const router = useRouter();
 const loading = ref(false);
@@ -132,6 +158,8 @@ const data = reactive({
   dimensionTotals: { judicial: 0, credit: 0, finance: 0 },
   recentRiskEvents: [],
   topRiskPartners: [],
+  review: null,
+  admission: null,
 });
 
 const GRADE_COLORS = {
@@ -155,6 +183,11 @@ function percent(count) {
 
 function openPartner(id) {
   router.push({ name: 'partner-report', params: { id } });
+}
+
+// 从看板直接进入客户列表并带上复审筛选
+function goReview(reviewStatus) {
+  router.push({ path: '/partners', query: { reviewStatus } });
 }
 
 onMounted(async () => {
@@ -220,6 +253,12 @@ onMounted(async () => {
 }
 .ml6 {
   margin-left: 6px;
+}
+.ml8 {
+  margin-left: 8px;
+}
+.review-alert {
+  margin-bottom: 12px;
 }
 .more {
   font-size: 13px;

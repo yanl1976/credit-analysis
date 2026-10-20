@@ -1,5 +1,6 @@
 import db from '../db.js';
 import { listRiskEvents } from './risk-service.js';
+import { getReviewStats, getAdmissionStats } from './partner-service.js';
 
 function scopeSql(orgIds, alias = 'p') {
   if (Array.isArray(orgIds)) {
@@ -61,6 +62,12 @@ export async function getOverview({ orgIds = null } = {}) {
     s.params,
   );
 
+  // 定期复审提示 + 风险名单分布
+  const [review, admission] = await Promise.all([
+    getReviewStats({ orgIds }),
+    getAdmissionStats({ orgIds }),
+  ]);
+
   const gradeOrder = ['AAA', 'AA', 'A', 'B', 'C', 'D'];
   const gradeMap = new Map(gradeRows.map((r) => [r.grade, Number(r.c || 0)]));
   const partnerCount = Number(partnerRow?.c || 0);
@@ -84,5 +91,7 @@ export async function getOverview({ orgIds = null } = {}) {
     },
     recentRiskEvents: recent.items,
     topRiskPartners: topRisk.map((r) => ({ ...r, veto: !!Number(r.veto), score: Number(r.score) })),
+    review,
+    admission,
   };
 }

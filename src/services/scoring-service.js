@@ -1,5 +1,5 @@
 import db from '../db.js';
-import { getPartner } from './partner-service.js';
+import { getPartner, ensureNextReviewDate } from './partner-service.js';
 import { getJudicial, getCredit, getFinance } from './collect-service.js';
 import { getTycRiskMetrics } from './tyc-service.js';
 import { SCORING_RULES } from '../../config/scoring.js';
@@ -412,6 +412,9 @@ export async function ratePartner(partnerId) {
   const previous = await getRating(id);
   const result = await calculateScore(id);
   const calculatedAt = await saveRating(result);
+
+  // 定期复审：评分后若客户还没有下次评估日期，按复审周期自动排期（不覆盖人工设置）
+  await ensureNextReviewDate(id, await getSetting('review.cycleDays', 90));
 
   const gradeChanged = !!previous && previous.grade !== result.grade;
   const recordEvent = await getSetting('warning.recordGradeChange', true);

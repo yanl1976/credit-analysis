@@ -3,6 +3,41 @@
     <h3 class="page-title">客户管理</h3>
     <p class="page-sub">按统一社会信用代码归一主体；评分与预警均以客户为维度。</p>
 
+    <div class="stat-row">
+      <div
+        class="stat-card clickable"
+        :class="{ active: reviewFilter === 'overdue' }"
+        @click="toggleReview('overdue')"
+      >
+        <div class="label">逾期待复审</div>
+        <div class="value danger">{{ reviewStats.overdue || 0 }}</div>
+      </div>
+      <div
+        class="stat-card clickable"
+        :class="{ active: reviewFilter === 'dueSoon' }"
+        @click="toggleReview('dueSoon')"
+      >
+        <div class="label">临期待复审（{{ reviewStats.warnDays || 14 }} 天内）</div>
+        <div class="value warning">{{ reviewStats.dueSoon || 0 }}</div>
+      </div>
+      <div
+        class="stat-card clickable"
+        :class="{ active: reviewFilter === 'unscheduled' }"
+        @click="toggleReview('unscheduled')"
+      >
+        <div class="label">未排复审</div>
+        <div class="value">{{ reviewStats.unscheduled || 0 }}</div>
+      </div>
+      <div
+        class="stat-card clickable"
+        :class="{ active: admissionFilter === 'BLACKLIST' }"
+        @click="toggleAdmission('BLACKLIST')"
+      >
+        <div class="label">黑名单客户</div>
+        <div class="value danger">{{ admissionStats.BLACKLIST || 0 }}</div>
+      </div>
+    </div>
+
     <div class="toolbar">
       <el-input
         v-model="keyword"
@@ -12,6 +47,21 @@
         @keyup.enter="load(1)"
         @clear="load(1)"
       />
+      <el-select
+        v-model="admissionFilter"
+        clearable
+        placeholder="准入状态"
+        style="width: 130px"
+        @change="load(1)"
+      >
+        <el-option v-for="o in admissionOptions" :key="o.value" :label="o.label" :value="o.value" />
+      </el-select>
+      <el-select v-model="reviewFilter" clearable placeholder="复审状态" style="width: 130px" @change="load(1)">
+        <el-option label="已逾期" value="overdue" />
+        <el-option label="临期" value="dueSoon" />
+        <el-option label="未排期" value="unscheduled" />
+        <el-option label="已排期" value="scheduled" />
+      </el-select>
       <el-button type="primary" @click="load(1)">检索</el-button>
       <el-button v-if="auth.hasPerm('customer:manage')" @click="openCreate">新建客户</el-button>
       <el-button
@@ -23,10 +73,26 @@
       >
         批量重算（当前范围）
       </el-button>
+      <el-button
+        v-if="auth.hasPerm('report:view')"
+        type="success"
+        plain
+        :loading="exporting"
+        @click="handleExport"
+      >
+        导出清单
+      </el-button>
       <span class="hint">共 {{ total }} 个客户</span>
     </div>
 
-    <el-table v-loading="loading" :data="rows" border stripe class="partner-table">
+    <el-table
+      v-loading="loading"
+      :data="rows"
+      border
+      stripe
+      :row-class-name="rowClassName"
+      class="partner-table"
+    >
       <el-table-column prop="name" label="客户名称" min-width="220" show-overflow-tooltip />
       <el-table-column prop="credit_code" label="统一社会信用代码" min-width="180" show-overflow-tooltip />
       <el-table-column prop="legal_person" label="法定代表人" min-width="100" show-overflow-tooltip />
@@ -36,6 +102,33 @@
             {{ row.reg_status }}
           </el-tag>
           <span v-else>-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="准入状态" min-width="130">
+        <template #default="{ row }">
+          <el-select
+            v-if="auth.hasPerm('customer:manage')"
+            :model-value="row.admission_status || 'NORMAL'"
+            size="small"
+            style="width: 112px"
+            @change="(v) => changeAdmission(row, v)"
+          >
+            <el-option v-for="o in admissionOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+          <el-tag v-else size="small" :type="admissionTagType(row.admission_status)">
+            {{ admissionLabel(row.admission_status) }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="下次复审" min-width="150">
+        <template #default="{ row }">
+          <template v-if="row.next_review_date">
+            <span :class="reviewDateClass(row)">{{ row.next_review_date }}</span>
+            <el-tag size="small" :type="reviewTagType(row.review_status)" effect="plain" class="ml6">
+              {{ reviewLabel(row.review_status) }}
+            </el-tag>
+          </template>
+          <el-tag v-else size="small" type="info" effect="plain">未排期</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="信用评分" min-width="130" align="center">
@@ -164,15 +257,26 @@
 
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ElMessageBox } from 'element-plus';
 import { ElMessage } from '../utils/feedback.js';
 import { partnerApi, authApi, orgApi, settingApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
-import { sourceLabel, sourceTagType, gradeTagType } from '../utils/grade.js';
+import {
+  sourceLabel,
+  sourceTagType,
+  gradeTagType,
+  admissionLabel,
+  admissionTagType,
+  admissionOptions,
+  reviewLabel,
+  reviewTagType,
+} from '../utils/grade.js';
+import { downloadCsv } from '../utils/csv.js';
 
 const auth = useAuthStore();
 const router = useRouter();
+const route = useRoute();
 
 const rows = ref([]);
 const total = ref(0);
@@ -184,6 +288,12 @@ const batchLoading = ref(false);
 const ratingId = ref(0);
 const scope = reactive({ isFull: false, orgIds: [] });
 const orgs = ref([]);
+const exporting = ref(false);
+// 风险名单与定期复审筛选
+const admissionFilter = ref('');
+const reviewFilter = ref('');
+const admissionStats = reactive({ NORMAL: 0, WATCH: 0, KEY: 0, BLACKLIST: 0, total: 0 });
+const reviewStats = reactive({ overdue: 0, dueSoon: 0, unscheduled: 0, scheduled: 0, total: 0, warnDays: 14 });
 
 const regStatuses = ['存续', '在营', '开业', '吊销', '注销', '迁出', '停业'];
 
@@ -232,13 +342,77 @@ async function load(p = page.value) {
     page.value = Number(p) || 1;
     const data = await partnerApi.list({
       keyword: keyword.value || undefined,
+      admissionStatus: admissionFilter.value || undefined,
+      reviewStatus: reviewFilter.value || undefined,
       page: page.value,
       pageSize: pageSize.value,
     });
     rows.value = data.items || [];
     total.value = data.total || 0;
+    if (data.reviewWarnDays) reviewStats.warnDays = data.reviewWarnDays;
   } finally {
     loading.value = false;
+  }
+}
+
+// 风险名单 / 复审统计（与列表筛选联动，点击卡片即筛选）
+async function loadStats() {
+  const [review, admission] = await Promise.all([
+    partnerApi.reviewStats(),
+    partnerApi.admissionStats(),
+  ]);
+  Object.assign(reviewStats, review || {});
+  for (const it of admission?.items || []) admissionStats[it.status] = it.count;
+  admissionStats.total = admission?.total || 0;
+}
+
+function toggleReview(status) {
+  reviewFilter.value = reviewFilter.value === status ? '' : status;
+  load(1);
+}
+
+function toggleAdmission(status) {
+  admissionFilter.value = admissionFilter.value === status ? '' : status;
+  load(1);
+}
+
+async function changeAdmission(row, value) {
+  try {
+    await partnerApi.update(row.id, { admissionStatus: value });
+    ElMessage.success(`已将「${row.name}」标记为${admissionLabel(value)}`);
+    await Promise.all([load(), loadStats()]);
+  } catch (e) {
+    /* 错误提示由请求拦截器统一处理 */
+  }
+}
+
+function rowClassName({ row }) {
+  if (row.admission_status === 'BLACKLIST') return 'row-blacklist';
+  if (row.admission_status === 'KEY') return 'row-key';
+  return '';
+}
+
+function reviewDateClass(row) {
+  if (row.review_status === 'overdue') return 'review-overdue';
+  if (row.review_status === 'dueSoon') return 'review-due-soon';
+  return '';
+}
+
+// 导出当前筛选范围内的客户清单（后端生成 CSV，带 BOM）
+async function handleExport() {
+  exporting.value = true;
+  try {
+    const res = await partnerApi.exportCsv({
+      keyword: keyword.value || undefined,
+      admissionStatus: admissionFilter.value || undefined,
+      reviewStatus: reviewFilter.value || undefined,
+    });
+    downloadCsv(res.filename, res.content);
+    ElMessage.success(
+      `已导出 ${res.exported} / ${res.total} 条${res.truncated ? '（超出单次上限，已截断）' : ''}`,
+    );
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -305,12 +479,12 @@ async function handleCreate() {
 }
 
 function openReport(row) {
-  // 带上当前检索词，报告页的「上一条/下一条」会在同一筛选范围内翻页
-  router.push({
-    name: 'partner-report',
-    params: { id: row.id },
-    query: keyword.value ? { keyword: keyword.value } : {},
-  });
+  // 带上当前检索词与筛选条件，报告页的「上一条/下一条」会在同一筛选范围内翻页
+  const query = {};
+  if (keyword.value) query.keyword = keyword.value;
+  if (admissionFilter.value) query.admissionStatus = admissionFilter.value;
+  if (reviewFilter.value) query.reviewStatus = reviewFilter.value;
+  router.push({ name: 'partner-report', params: { id: row.id }, query });
 }
 
 async function handleRate(row) {
@@ -352,6 +526,10 @@ async function handleDelete(row) {
 }
 
 onMounted(async () => {
+  // 从看板/报告页跳转过来时，沿用 URL 上的筛选条件
+  if (route.query.keyword) keyword.value = String(route.query.keyword);
+  if (route.query.admissionStatus) admissionFilter.value = String(route.query.admissionStatus);
+  if (route.query.reviewStatus) reviewFilter.value = String(route.query.reviewStatus);
   try {
     const pub = await settingApi.public();
     if (pub?.pageSize) pageSize.value = Number(pub.pageSize) || 20;
@@ -359,6 +537,9 @@ onMounted(async () => {
     /* 使用默认分页 */
   }
   await load(1);
+  loadStats().catch(() => {
+    /* 统计失败不影响列表 */
+  });
   const s = await authApi.scope();
   Object.assign(scope, s);
   if (s.isFull) orgs.value = (await orgApi.list()) || [];
@@ -420,5 +601,41 @@ onMounted(async () => {
   color: #606266;
   line-height: 1.7;
   margin-top: 4px;
+}
+/* 统计卡可点击筛选（复用全局 .stat-row / .stat-card） */
+.stat-card.clickable {
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  border: 1px solid transparent;
+}
+.stat-card.clickable:hover {
+  border-color: #c6e2ff;
+}
+.stat-card.clickable.active {
+  border-color: #409eff;
+  box-shadow: 0 0 0 1px #409eff inset;
+}
+.stat-card .value.danger {
+  color: #f56c6c;
+}
+.stat-card .value.warning {
+  color: #e6a23c;
+}
+.ml6 {
+  margin-left: 6px;
+}
+.review-overdue {
+  color: #f56c6c;
+  font-weight: 600;
+}
+.review-due-soon {
+  color: #e6a23c;
+  font-weight: 600;
+}
+:deep(.row-blacklist) {
+  background-color: #fef0f0 !important;
+}
+:deep(.row-key) {
+  background-color: #fdf6ec !important;
 }
 </style>

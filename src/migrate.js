@@ -68,11 +68,15 @@ const DDL = [
     reg_status VARCHAR(32) NULL,
     province VARCHAR(32) NULL,
     industry VARCHAR(64) NULL,
+    admission_status VARCHAR(16) NOT NULL DEFAULT 'NORMAL',
+    next_review_date DATE NULL,
     data_source VARCHAR(16) NOT NULL DEFAULT 'manual',
     created_at DATETIME NULL,
     updated_at DATETIME NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uk_partner_credit_code (credit_code)
+    UNIQUE KEY uk_partner_credit_code (credit_code),
+    KEY idx_partner_admission (admission_status),
+    KEY idx_partner_next_review (next_review_date)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
   `CREATE TABLE IF NOT EXISTS partner_judicial (
@@ -256,6 +260,18 @@ const COLUMN_UPGRADES = [
     table: 'risk_event',
     column: 'handle_note',
     sql: 'ALTER TABLE risk_event ADD COLUMN handle_note VARCHAR(500) NULL AFTER handled_at',
+  },
+  // 准入状态（正常/关注/重点监控/黑名单）：风险名单与列表筛选依据
+  {
+    table: 'partner',
+    column: 'admission_status',
+    sql: "ALTER TABLE partner ADD COLUMN admission_status VARCHAR(16) NOT NULL DEFAULT 'NORMAL' AFTER industry",
+  },
+  // 下次评估日期：定期复审的临期/逾期判定基准
+  {
+    table: 'partner',
+    column: 'next_review_date',
+    sql: 'ALTER TABLE partner ADD COLUMN next_review_date DATE NULL AFTER admission_status',
   },
 ];
 

@@ -9,8 +9,16 @@ export const authApi = {
 export const partnerApi = {
   list: (params) => http.get('/partners', { params }),
   detail: (id) => http.get(`/partners/${id}`),
-  // 资信报告上下换页：按客户列表顺序取相邻客户（keyword 与列表检索保持一致）
-  neighbors: (id, keyword) => http.get(`/partners/${id}/neighbors`, { params: { keyword } }),
+  // 风险名单分布：正常 / 关注 / 重点监控 / 黑名单
+  admissionStats: () => http.get('/partners/admission-stats'),
+  // 定期复审：逾期 / 临期 / 未排期
+  reviewStats: () => http.get('/partners/review-stats'),
+  // 客户清单导出（CSV，按当前筛选范围），返回 { filename, content }
+  exportCsv: (params) => http.get('/partners/export', { params }),
+  // 单客户资信报告导出（CSV）
+  reportExport: (id) => http.get(`/partners/${id}/report-export`),
+  // 资信报告上下换页：按客户列表顺序取相邻客户（筛选条件与列表保持一致）
+  neighbors: (id, params = {}) => http.get(`/partners/${id}/neighbors`, { params }),
   create: (body) => http.post('/partners', body),
   update: (id, body) => http.put(`/partners/${id}`, body),
   remove: (id) => http.delete(`/partners/${id}`),

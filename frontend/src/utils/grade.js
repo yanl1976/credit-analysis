@@ -44,3 +44,46 @@ export function deltaClass(delta) {
   if (delta < 0) return 'delta-minus';
   return 'delta-zero';
 }
+
+// 准入状态（风险名单）：正常 / 关注 / 重点监控 / 黑名单
+export const ADMISSION_LABELS = {
+  NORMAL: '正常',
+  WATCH: '关注',
+  KEY: '重点监控',
+  BLACKLIST: '黑名单',
+};
+
+export const admissionOptions = ['NORMAL', 'WATCH', 'KEY', 'BLACKLIST'].map((value) => ({
+  value,
+  label: ADMISSION_LABELS[value],
+}));
+
+export function admissionLabel(status) {
+  return ADMISSION_LABELS[status] || '正常';
+}
+
+export function admissionTagType(status) {
+  if (status === 'BLACKLIST') return 'danger';
+  if (status === 'KEY') return 'warning';
+  if (status === 'WATCH') return 'primary';
+  return 'info';
+}
+
+// 复审状态：未排期 / 逾期 / 临期 / 已排期
+export const REVIEW_LABELS = {
+  unscheduled: '未排期',
+  overdue: '已逾期',
+  dueSoon: '临期',
+  scheduled: '已排期',
+};
+
+export function reviewLabel(status) {
+  return REVIEW_LABELS[status] || '-';
+}
+
+export function reviewTagType(status) {
+  if (status === 'overdue') return 'danger';
+  if (status === 'dueSoon') return 'warning';
+  if (status === 'scheduled') return 'success';
+  return 'info';
+}

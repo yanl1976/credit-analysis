@@ -10,6 +10,19 @@
             <el-tag size="small" :type="sourceTagType(partner.data_source)" class="ml8">
               {{ sourceLabel(partner.data_source) }}
             </el-tag>
+            <el-tag size="small" :type="admissionTagType(partner.admission_status)" effect="dark" class="ml8">
+              准入：{{ admissionLabel(partner.admission_status) }}
+            </el-tag>
+            <el-tag
+              v-if="partner.next_review_date"
+              size="small"
+              :type="reviewTagType(reviewState)"
+              effect="plain"
+              class="ml8"
+            >
+              下次复审：{{ partner.next_review_date }}（{{ reviewLabel(reviewState) }}）
+            </el-tag>
+            <el-tag v-else size="small" type="info" effect="plain" class="ml8">复审：未排期</el-tag>
           </p>
         </div>
         <div class="head-actions">
@@ -37,6 +50,15 @@
             @click="handleRate"
           >
             重算评分
+          </el-button>
+          <el-button
+            v-if="auth.hasPerm('report:view')"
+            type="success"
+            plain
+            :loading="exporting"
+            @click="handleExportReport"
+          >
+            导出报告
           </el-button>
           <el-button-group class="nav-group">
             <el-button :disabled="!neighbors.prev" title="上一条（客户列表中更靠前）" @click="goNeighbor('prev')">
@@ -578,7 +600,18 @@ import { ElMessageBox } from 'element-plus';
 import { ElMessage } from '../utils/feedback.js';
 import { partnerApi, aiApi } from '../api/index.js';
 import { useAuthStore } from '../stores/auth.js';
-import { gradeTagType, riskTagType, deltaClass, sourceLabel, sourceTagType } from '../utils/grade.js';
+import {
+  gradeTagType,
+  riskTagType,
+  deltaClass,
+  sourceLabel,
+  sourceTagType,
+  admissionLabel,
+  admissionTagType,
+  reviewLabel,
+  reviewTagType,
+} from '../utils/grade.js';
+import { downloadCsv } from '../utils/csv.js';
 import {
   summarizeTycRisk,
   parseTycFiscal,
@@ -599,10 +632,19 @@ const id = Number(route.params.id);
 // 上下换页：沿用客户列表顺序（id DESC），检索词随列表带入，避免切换后跳出筛选范围
 const neighbors = reactive({ prev: null, next: null, index: 0, total: 0 });
 
+// 当前生效的列表筛选（检索词 + 准入状态 + 复审状态），翻页时原样带回
+function filterQuery() {
+  const q = {};
+  for (const key of ['keyword', 'admissionStatus', 'reviewStatus']) {
+    const v = route.query[key];
+    if (v) q[key] = String(v);
+  }
+  return q;
+}
+
 async function loadNeighbors() {
   try {
-    const keyword = route.query.keyword ? String(route.query.keyword) : undefined;
-    Object.assign(neighbors, await partnerApi.neighbors(id, keyword));
+    Object.assign(neighbors, await partnerApi.neighbors(id, filterQuery()));
   } catch {
     Object.assign(neighbors, { prev: null, next: null, index: 0, total: 0 });
   }
@@ -611,13 +653,27 @@ async function loadNeighbors() {
 function goNeighbor(dir) {
   const target = dir === 'prev' ? neighbors.prev : neighbors.next;
   if (!target) return;
-  const keyword = route.query.keyword;
   router.push({
     name: 'partner-report',
     params: { id: target.id },
-    query: keyword ? { keyword: String(keyword) } : {},
+    query: filterQuery(),
   });
 }
+
+// 复审状态：优先后端派生结果（与列表/统计同一口径），缺失时按日期兜底
+const reviewState = computed(() => {
+  if (partner.value?.review_status) return partner.value.review_status;
+  const d = partner.value?.next_review_date;
+  if (!d) return 'unscheduled';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(`${String(d).slice(0, 10)}T00:00:00`);
+  const days = Math.round((target - today) / 86400000);
+  if (Number.isNaN(days)) return 'unscheduled';
+  if (days < 0) return 'overdue';
+  if (days <= 14) return 'dueSoon';
+  return 'scheduled';
+});
 
 const loading = ref(false);
 const collecting = ref(false);
@@ -627,6 +683,7 @@ const aiNote = ref('');
 const aiJob = ref(null);
 let aiPollTimer = null;
 const rating = ref(false);
+const exporting = ref(false);
 const tab = ref('profile');
 
 const partner = ref({});
@@ -803,6 +860,18 @@ async function handleRate() {
     await loadAll();
   } finally {
     rating.value = false;
+  }
+}
+
+// 导出当前客户的资信报告（基本信息 + 扣分明细）
+async function handleExportReport() {
+  exporting.value = true;
+  try {
+    const res = await partnerApi.reportExport(id);
+    downloadCsv(res.filename, res.content);
+    ElMessage.success('报告已导出');
+  } finally {
+    exporting.value = false;
   }
 }
 
