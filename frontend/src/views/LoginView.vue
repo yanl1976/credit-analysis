@@ -56,7 +56,7 @@ async function handleLogin() {
   loading.value = true;
   try {
     await auth.login(form.username.trim(), form.password);
-    ElMessage.success('登录成功');
+    // 登录成功直接跳转，不弹提示（进入系统本身即反馈）
     router.replace(route.query.redirect || '/dashboard');
   } catch {
     // 拦截器已提示
