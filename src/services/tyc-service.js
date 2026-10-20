@@ -810,16 +810,24 @@ function pickRegistration(p) {
 }
 
 export async function getTycProfile(partnerId) {
-  const rows = await db.all(
-    `SELECT biz_key, payload_json, fetched_at FROM partner_raw
-      WHERE partner_id = ? AND channel = ? ORDER BY id DESC`,
-    [Number(partnerId), CHANNEL],
-  );
+  const pidNum = Number(partnerId);
+  const readChannel = async (channel) => {
+    const rows = await db.all(
+      'SELECT biz_key, payload_json, fetched_at FROM partner_raw WHERE partner_id = ? AND channel = ? ORDER BY id DESC',
+      [pidNum, channel],
+    );
+    const latest = {};
+    for (const r of rows) if (!latest[r.biz_key]) latest[r.biz_key] = r;
+    return latest;
+  };
+  // 多通道画像：天眼查优先，企查查兜底；画像页不区分来源
+  const tycLatest = await readChannel(CHANNEL);
+  const qccLatest = await readChannel('qcc');
   const latest = {};
-  for (const r of rows) if (!latest[r.biz_key]) latest[r.biz_key] = r;
-
-  const parse = (k) => {
-    const r = latest[k];
+  for (const key of new Set([...Object.keys(tycLatest), ...Object.keys(qccLatest)])) {
+    latest[key] = tycLatest[key] || qccLatest[key];
+  }
+  const parseObj = (r) => {
     if (!r) return null;
     try {
       return JSON.parse(r.payload_json);
@@ -827,8 +835,27 @@ export async function getTycProfile(partnerId) {
       return null;
     }
   };
+  const parse = (k) => parseObj(latest[k]);
+  // 逐个字段合并：前者非空优先，后者补空
+  const mergeObj = (...objs) => {
+    const out = {};
+    for (const o of objs) {
+      if (!o) continue;
+      for (const [k, v] of Object.entries(o)) {
+        const empty = out[k] === undefined || out[k] === null || out[k] === '';
+        const emptyArr = Array.isArray(out[k]) && out[k].length === 0;
+        if (empty || (emptyArr && Array.isArray(v) && v.length)) out[k] = v;
+      }
+    }
+    return out;
+  };
 
-  const registration = pickRegistration(parse('registration'));
+  const registration = (() => {
+    const tycReg = pickRegistration(parseObj(tycLatest.registration));
+    const qccReg = pickRegistration(parseObj(qccLatest.registration));
+    if (!tycReg && !qccReg) return null;
+    return mergeObj(tycReg, qccReg);
+  })();
   const profileRaw = parse('profile');
   const riskRaw = parse('risk_overview');
   const iprRaw = parse('ipr_score');
@@ -839,7 +866,12 @@ export async function getTycProfile(partnerId) {
     items: (g.list || []).map((i) => ({ name: i.name || i.title || '-', total: Number(i.total || 0) })),
   }));
 
-  const syncedAt = Object.values(latest)
+  const providers = {
+    tyc: Object.keys(tycLatest).length > 0,
+    qcc: Object.keys(qccLatest).length > 0,
+  };
+
+  const syncedAt = Object.values({ ...tycLatest, ...qccLatest })
     .map((r) => r.fetched_at)
     .filter(Boolean)
     .sort()
@@ -884,6 +916,7 @@ export async function getTycProfile(partnerId) {
   return {
     configured: isTycConfigured(),
     syncedAt,
+    providers,
     partnerLegalPerson: null, // 由调用方补充判断，避免额外查询
     dimensions: {
       judicial: Number(dim?.judicial || 0),

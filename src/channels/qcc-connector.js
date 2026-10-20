@@ -178,7 +178,7 @@ export class QccConnector extends BaseConnector {
     return cleaned || undefined;
   }
 
-  _mapJudicialItems(items = []) {
+  _mapJudicialItems(items = [], selfName) {
     const get = (o, ...ks) => {
       for (const k of ks) {
         const v = o?.[k];
@@ -186,18 +186,57 @@ export class QccConnector extends BaseConnector {
       }
       return undefined;
     };
+    const pickParty = (parties, ...keys) => {
+      for (const k of keys) {
+        const v = parties?.[k];
+        if (Array.isArray(v) && v.length) return v;
+        if (typeof v === 'string' && v) return [v];
+      }
+      return [];
+    };
     return items
-      .map((it) => ({
-        caseType: get(it, '案由', '案件类型', '案件性质', 'caseType', 'type'),
-        partyRole: get(it, '身份', '当事人角色', 'partyRole', 'role'),
-        caseNo: get(it, '案号', '案件编号', 'caseNo', 'docId', '文书ID'),
-        court: get(it, '法院', '审理法院', 'court') || this._courtFrom(it),
-        amount: this._num(get(it, '案件金额', '涉案金额', '标的额', 'amount', 'money')),
-        status: get(it, '状态', '审理状态', 'status'),
-        date: get(it, '裁判日期', '发布日期', '立案日期', '日期', 'date', '时间'),
-        detail: it,
-      }))
+      .map((it) => {
+        const parties = it?.['当事人'] || it?.['当事人信息'] || {};
+        const plaintiff = pickParty(parties, '原告', '申请执行人', '上诉人', '申请人', '起诉人');
+        const defendant = pickParty(parties, '被告', '被执行人', '被上诉人', '被申请人', '被起诉人');
+        return {
+          caseType: get(it, '案由', '案件类型', '案件性质', 'caseType', 'type'),
+          partyRole: this._roleOf(selfName, parties) || get(it, '身份', '当事人角色', 'partyRole', 'role'),
+          plaintiff: plaintiff.length ? plaintiff.join('、') : null,
+          defendant: defendant.length ? defendant.join('、') : null,
+          docTitle: get(it, '文书标题', '标题', 'docTitle'),
+          judgeResult: get(it, '裁判结果', '判决结果', 'judgeResult'),
+          caseNo: get(it, '案号', '案件编号', 'caseNo', 'docId', '文书ID'),
+          court: get(it, '法院', '审理法院', 'court') || this._courtFrom(it),
+          amount: this._num(get(it, '案件金额', '涉案金额', '标的额', 'amount', 'money')),
+          status: get(it, '状态', '审理状态', 'status'),
+          date: get(it, '裁判日期', '发布日期', '立案日期', '日期', 'date', '时间'),
+          detail: it,
+        };
+      })
       .filter((x) => x.caseNo || x.court || x.detail);
+  }
+
+  // 判断本企业在案件中的角色（原告/被告/申请执行人/被执行人…）
+  _roleOf(selfName, parties = {}) {
+    const name = String(selfName || '').trim();
+    if (!name) return undefined;
+    const hit = (arr) =>
+      Array.isArray(arr) && arr.some((x) => String(x).includes(name) || name.includes(String(x)));
+    const order = [
+      ['原告', '原告'],
+      ['被告', '被告'],
+      ['申请执行人', '申请执行人'],
+      ['被执行人', '被执行人'],
+      ['上诉人', '上诉人'],
+      ['被上诉人', '被上诉人'],
+      ['申请人', '申请人'],
+      ['被申请人', '被申请人'],
+      ['起诉人', '起诉人'],
+      ['被起诉人', '被起诉人'],
+    ];
+    for (const [key, label] of order) if (hit(parties[key])) return label;
+    return undefined;
   }
 
   _mapCreditItems(items = [], itemType) {
@@ -236,11 +275,86 @@ export class QccConnector extends BaseConnector {
         const text = this._extractText(res);
         out.rawByDomain[spec.tool] = text;
         const items = this._extractItems(text, spec.keys);
-        if (spec.kind === 'judicial') out.judicial.push(...this._mapJudicialItems(items));
+        if (spec.kind === 'judicial') out.judicial.push(...this._mapJudicialItems(items, name));
         else out.credit.push(...this._mapCreditItems(items, spec.itemType));
       } catch {
         // 单个工具失败（未开通/超时）不影响其余与工商基础采集
       }
+    }
+    return out;
+  }
+
+  // 企查查工商登记 → 与天眼查 pickRegistration 对齐的统一结构
+  _mapRegistration(d = {}) {
+    const g = (...ks) => {
+      for (const k of ks) {
+        const v = d?.[k];
+        if (v !== undefined && v !== null && v !== '') return v;
+      }
+      return null;
+    };
+    const industry = d?.['国标行业'] || {};
+    const district = d?.['地区信息'] || {};
+    const term = String(g('营业期限') || '');
+    const [fromTime, toTime] = term.split('至');
+    const industrySmall = industry['小类'] || industry['中类'] || null;
+    return {
+      name: g('企业名称'),
+      creditCode: g('统一社会信用代码'),
+      regStatus: g('登记状态'),
+      legalPersonName: g('法定代表人'),
+      companyOrgType: g('企业类型'),
+      regCapital: g('注册资本'),
+      actualCapital: g('实缴资本'),
+      estiblishTime: g('成立日期'),
+      fromTime: fromTime || null,
+      toTime: toTime || null,
+      approvedTime: g('核准日期'),
+      regInstitute: g('登记机关'),
+      regLocation: g('注册地址'),
+      industry: industry['门类'] || null,
+      industrySmall,
+      // 兼容天眼查 pickRegistration 对 industrySmall 的读取口径
+      industryAll: { categorySmall: industrySmall },
+      city: district['城市'] || null,
+      district: district['区域'] || null,
+      socialStaffNum: this._num(g('参保人数')),
+      staffNumRange: g('人员规模'),
+      tags: [],
+      historyNames: [],
+      businessScope: g('经营范围'),
+      percentileScore: null,
+    };
+  }
+
+  // 采集企业画像（工商登记 + 企业简介）：默认开启，供画像页与天眼查共用
+  async _collectProfile(searchKey) {
+    const out = { registration: null, profile: null, raw: {} };
+    if (!searchKey) return out;
+    try {
+      const res = await this.callTool('company', 'get_company_registration_info', { searchKey });
+      const text = this._extractText(res);
+      out.raw.registration = text;
+      const obj = JSON.parse(text);
+      out.registration = this._mapRegistration(obj?.data ?? obj?.result ?? obj);
+    } catch {
+      // 未开通/超时：画像缺失不影响工商基础与风险维度采集
+    }
+    try {
+      const res = await this.callTool('company', 'get_company_profile', { searchKey });
+      const text = this._extractText(res);
+      out.raw.profile = text;
+      const obj = JSON.parse(text);
+      const d = obj?.data ?? obj?.result ?? obj;
+      out.profile = {
+        profile: d?.['简介'] || null,
+        industry: d?.['企查查行业'] || null,
+        scale: d?.['企业规模'] || null,
+        mainProducts: d?.['主营产品'] || [],
+        industryChain: d?.['产业链概览'] || null,
+      };
+    } catch {
+      // 同上
     }
     return out;
   }
@@ -297,6 +411,10 @@ export class QccConnector extends BaseConnector {
       });
       const res = await this.callTool('company', tool.name, args);
       const adapted = this._adapt(res, 'detail');
+      // 企业画像（工商登记 + 简介）：与天眼查共用同一结构与存储约定
+      const prof = await this._collectProfile(creditCode || partner?.name);
+      adapted.profileDoc = { registration: prof.registration, profile: prof.profile };
+      adapted.rawProfile = prof.raw;
       if (this.riskDomains) {
         const name = adapted.normalized?.basic?.name || partner?.name;
         const risk = await this._collectRiskDomains(name, creditCode);

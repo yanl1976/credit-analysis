@@ -188,10 +188,18 @@
 
           <el-empty
             v-if="!tyc || !tyc.syncedAt"
-            :description="tyc && !tyc.configured ? '未配置天眼AI 访问令牌（TIANYANCHA_MCP_TOKEN / TIANYANCHA_MCP_TOKENS）' : '尚未同步企业画像数据'"
+            description="尚未从任何渠道采到企业画像，请先「采集」或「同步企业画像」"
           />
 
           <template v-else>
+            <div class="hint" style="margin-bottom: 8px">
+              数据来源：
+              <el-tag v-if="tyc.providers?.tyc" size="small" type="success" effect="plain" class="mr6">天眼查</el-tag>
+              <el-tag v-if="tyc.providers?.qcc" size="small" type="warning" effect="plain">企查查</el-tag>
+              <span v-if="tyc.syncedAt" class="ml8">
+                最近更新：{{ String(tyc.syncedAt).slice(0, 19).replace('T', ' ') }}
+              </span>
+            </div>
             <div class="tyc-hero">
               <div class="tyc-hero-main">
                 <span class="tyc-name">{{ tyc.registration?.name || partner.name }}</span>
@@ -384,13 +392,17 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column prop="case_type" label="案件类型" width="120" />
+            <el-table-column prop="case_type" label="案件类型" min-width="130" show-overflow-tooltip />
+            <el-table-column prop="plaintiff" label="原告" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="defendant" label="被告" min-width="160" show-overflow-tooltip />
             <el-table-column prop="party_role" label="当事人角色" width="110" />
-            <el-table-column prop="case_no" label="案号" min-width="160" />
-            <el-table-column prop="court" label="法院" min-width="140" />
-            <el-table-column prop="amount" label="标的(元)" width="120" align="right" />
+            <el-table-column prop="doc_title" label="文书标题" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="case_no" label="案号" min-width="170" show-overflow-tooltip />
+            <el-table-column prop="court" label="法院" min-width="150" show-overflow-tooltip />
+            <el-table-column prop="judge_result" label="裁判结果" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="amount" label="标的(元)" width="110" align="right" />
             <el-table-column prop="status" label="状态" width="90" />
-            <el-table-column prop="date" label="日期" width="120" />
+            <el-table-column prop="date" label="日期" width="110" />
             <el-table-column label="来源" width="100">
               <template #default="{ row }">
                 <el-tag size="small" :type="sourceTagType(row.data_source)">{{ sourceLabel(row.data_source) }}</el-tag>

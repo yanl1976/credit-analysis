@@ -84,6 +84,10 @@ const DDL = [
     partner_id INT UNSIGNED NOT NULL,
     case_type VARCHAR(32) NULL,
     party_role VARCHAR(16) NULL,
+    plaintiff VARCHAR(255) NULL,
+    defendant VARCHAR(255) NULL,
+    doc_title VARCHAR(255) NULL,
+    judge_result TEXT NULL,
     case_no VARCHAR(64) NULL,
     court VARCHAR(128) NULL,
     amount DECIMAL(18,2) NULL,
@@ -207,6 +211,26 @@ const COLUMN_UPGRADES = [
     table: 'partner_judicial',
     column: 'data_source',
     sql: "ALTER TABLE partner_judicial ADD COLUMN data_source VARCHAR(16) NOT NULL DEFAULT 'manual'",
+  },
+  {
+    table: 'partner_judicial',
+    column: 'plaintiff',
+    sql: 'ALTER TABLE partner_judicial ADD COLUMN plaintiff VARCHAR(255) NULL AFTER party_role',
+  },
+  {
+    table: 'partner_judicial',
+    column: 'defendant',
+    sql: 'ALTER TABLE partner_judicial ADD COLUMN defendant VARCHAR(255) NULL AFTER plaintiff',
+  },
+  {
+    table: 'partner_judicial',
+    column: 'doc_title',
+    sql: 'ALTER TABLE partner_judicial ADD COLUMN doc_title VARCHAR(255) NULL AFTER defendant',
+  },
+  {
+    table: 'partner_judicial',
+    column: 'judge_result',
+    sql: 'ALTER TABLE partner_judicial ADD COLUMN judge_result TEXT NULL AFTER doc_title',
   },
   {
     table: 'partner_credit',

@@ -43,12 +43,16 @@ export async function saveJudicial(partnerId, items = []) {
   for (const it of items) {
     await db.run(
       `INSERT INTO partner_judicial
-        (partner_id, case_type, party_role, case_no, court, amount, status, date, detail_json, fetched_at, data_source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (partner_id, case_type, party_role, plaintiff, defendant, doc_title, judge_result, case_no, court, amount, status, date, detail_json, fetched_at, data_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         partnerId,
         it.caseType || null,
         it.partyRole || null,
+        it.plaintiff || null,
+        it.defendant || null,
+        it.docTitle || null,
+        it.judgeResult || null,
         it.caseNo || null,
         it.court || null,
         it.amount ?? null,
@@ -218,7 +222,16 @@ export async function collectPartner(partnerId) {
         mode = result?.mode || null;
         if (result && result.ok) {
           status = 'ok';
-          if (recordRaw) await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result);
+          if (recordRaw) {
+            await saveRaw(partnerId, c.key, partner.credit_code || partner.name, result);
+            // 画像（工商登记/简介）按统一 biz_key 落库，供画像页跨渠道合并读取
+            if (result.profileDoc?.registration) {
+              await saveRaw(partnerId, c.key, 'registration', result.profileDoc.registration);
+            }
+            if (result.profileDoc?.profile) {
+              await saveRaw(partnerId, c.key, 'profile', result.profileDoc.profile);
+            }
+          }
           const normalized = result.normalized || {};
           if (normalized.basic) {
             const fill = await backfillPartnerBasic(partner, normalized.basic);
@@ -414,13 +427,17 @@ const DIMENSIONS = {
     fields: {
       caseType: 'case_type',
       partyRole: 'party_role',
+      plaintiff: 'plaintiff',
+      defendant: 'defendant',
+      docTitle: 'doc_title',
+      judgeResult: 'judge_result',
       caseNo: 'case_no',
       court: 'court',
       amount: 'amount',
       status: 'status',
       date: 'date',
     },
-    prefix: ['case_type', 'party_role', 'case_no', 'court', 'amount', 'status', 'date', 'detail_json', 'fetched_at'],
+    prefix: ['case_type', 'party_role', 'plaintiff', 'defendant', 'doc_title', 'judge_result', 'case_no', 'court', 'amount', 'status', 'date', 'detail_json', 'fetched_at'],
   },
   credit: {
     table: 'partner_credit',
