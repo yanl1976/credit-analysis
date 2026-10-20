@@ -1,8 +1,16 @@
 import db from '../db.js';
 import { getPartner } from './partner-service.js';
 import { listConnectors } from '../channels/registry.js';
+import { getChannelPrimary } from '../channels/index.js';
 import { getSetting } from './setting-service.js';
 import { REASON, reasonMeta, reasonOfException, CATEGORY_LABEL } from '../channels/error-codes.js';
+
+// 主力渠道选择：qcc / tianyancha / auto（全部并行）。返回应参与采集的渠道 key 集合，null 表示全部。
+function resolveAllowedChannels(primary) {
+  if (primary === 'qcc') return new Set(['qcc']);
+  if (primary === 'tianyancha') return new Set(['tianyancha']);
+  return null;
+}
 
 const now = () => new Date();
 
@@ -179,7 +187,8 @@ export async function collectPartner(partnerId) {
   if (!partner) throw new Error('客户不存在');
 
   const recordRaw = await getSetting('collect.recordRaw', true);
-  const connectors = listConnectors();
+  const allowed = resolveAllowedChannels(getChannelPrimary());
+  const connectors = listConnectors().filter((c) => !allowed || allowed.has(c.key));
   const tasks = [];
   for (const c of connectors) {
     const started = Date.now();

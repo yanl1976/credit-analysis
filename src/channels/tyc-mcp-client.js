@@ -52,7 +52,8 @@ export class TycMcpClient {
     protocolVersion = PROTOCOL_VERSION,
   } = {}) {
     this.endpoint = String(endpoint || DEFAULT_ENDPOINT).replace(/\/+$/, '');
-    this.token = String(token || '').trim();
+    // 兼容用户误填「Bearer xxx」：统一剥离前缀，最终按 Authorization: Bearer <纯token> 发送
+    this.token = String(token || '').trim().replace(/^Bearer\s+/i, '');
     this.timeoutMs = timeoutMs;
     this.protocolVersion = protocolVersion;
     this.sessionId = null;

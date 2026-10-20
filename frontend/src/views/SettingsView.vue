@@ -105,6 +105,18 @@
               </div>
               <div class="setting-control">
                 <el-switch v-if="item.type === 'boolean'" v-model="settingForm[item.key]" />
+                <el-select
+                  v-else-if="item.type === 'enum'"
+                  v-model="settingForm[item.key]"
+                  style="width: 260px"
+                >
+                  <el-option
+                    v-for="opt in (item.options || [])"
+                    :key="opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
                 <el-input-number
                   v-else-if="item.type === 'number'"
                   v-model="settingForm[item.key]"

@@ -5,6 +5,7 @@ import { TianyanchaConnector } from './tianyancha-connector.js';
 import { getChannelSettings } from '../services/setting-service.js';
 
 let initialized = false;
+let channelPrimary = 'auto';
 
 function positiveNumber(v, fallback) {
   const n = Number(v);
@@ -29,6 +30,25 @@ function mergeTianyancha(base = {}, saved = {}) {
   };
 }
 
+// 企查查（MCP）配置合并：DB 覆盖优先，未配置时回落 .env
+function mergeQcc(base = {}, saved = {}) {
+  return {
+    ...base,
+    enabled: saved.enabled === undefined || saved.enabled === null ? base.enabled !== false : Boolean(saved.enabled),
+    apiKey: String(saved.apiKey || base.apiKey || ''),
+    base: String(saved.base || base.base || 'https://agent.qcc.com/mcp'),
+    unitCost: positiveNumber(saved.unitCost, positiveNumber(base.unitCost, 0)),
+    dailyMaxCalls: positiveNumber(saved.dailyMaxCalls, positiveNumber(base.dailyMaxCalls, 200)),
+    dailyMaxCost: positiveNumber(saved.dailyMaxCost, positiveNumber(base.dailyMaxCost, 0)),
+    riskDomains: saved.riskDomains === undefined || saved.riskDomains === null ? base.riskDomains !== false : Boolean(saved.riskDomains),
+  };
+}
+
+// 采集路由读取：决定渠道优先级（auto / qcc / tianyancha）
+export function getChannelPrimary() {
+  return channelPrimary;
+}
+
 // 初始化并注册全部渠道 Connector（幂等）
 export async function initChannels() {
   if (initialized) return;
@@ -39,10 +59,11 @@ export async function initChannels() {
     // 表未就绪或读取失败时退回 .env 配置，不阻断启动
     saved = {};
   }
-  // 只保留两个商业数据源；公开渠道（信用中国/执行信息公开网）已剔除，
-  // 司法与经营风险数据统一由天眼查开放平台提供（见 config/channels.js 注释）
-  registerConnector(new QccConnector(channelConfig.qcc));
-  registerConnector(new TianyanchaConnector(mergeTianyancha(channelConfig.tianyancha, saved)));
+  const qccSaved = saved.qcc || {};
+  const tycSaved = saved.tianyancha || {};
+  channelPrimary = saved.primary || 'auto';
+  registerConnector(new QccConnector(mergeQcc(channelConfig.qcc, qccSaved)));
+  registerConnector(new TianyanchaConnector(mergeTianyancha(channelConfig.tianyancha, tycSaved)));
   initialized = true;
 }
 

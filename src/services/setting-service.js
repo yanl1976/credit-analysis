@@ -92,6 +92,90 @@ export const SETTING_DEFS = [
     description: '客户 / 预警列表默认每页条数',
   },
 
+  // ===== 数据渠道：通用（主力选择） =====
+  {
+    group: '数据渠道 · 通用',
+    key: 'channel.primary',
+    label: '主力数据源',
+    type: 'enum',
+    default: 'auto',
+    options: [
+      { value: 'auto', label: '自动（企查查优先，失败回退天眼查）' },
+      { value: 'qcc', label: '企查查（MCP）' },
+      { value: 'tianyancha', label: '天眼查' },
+    ],
+    description: '采集时优先使用的渠道；auto 下企查查可用则优先，否则回退天眼查',
+  },
+
+  // ===== 数据渠道：企查查（MCP） =====
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.enabled',
+    label: '启用企查查',
+    type: 'boolean',
+    default: Boolean(process.env.QCC_API_KEY),
+    description: '开启后采集可调用企查查 MCP（company/risk/ipr/legal-case 等业务域）；需先配置下方 Token',
+  },
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.apiKey',
+    label: 'MCP Token',
+    type: 'string',
+    secret: true,
+    default: process.env.QCC_API_KEY || '',
+    maxLength: 200,
+    description: '企查查 MCP 鉴权 Token（仅填 Token 值本身，不要带 Bearer 前缀，系统会自动添加）。保存后立即生效；接口不返回明文',
+  },
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.base',
+    label: 'MCP 网关地址',
+    type: 'string',
+    default: process.env.QCC_MCP_BASE || 'https://agent.qcc.com/mcp',
+    maxLength: 200,
+    description: '企查查 MCP 网关前缀，一般无需修改；各业务域 endpoint 在此之下拼接',
+  },
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.unitCost',
+    label: '单次调用成本（元）',
+    type: 'number',
+    decimals: 2,
+    min: 0,
+    max: 1000,
+    default: Number(process.env.QCC_UNIT_COST || 0),
+    description: '用于日成本预算累计，按实际采购价填写（0 表示不计成本）',
+  },
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.dailyMaxCalls',
+    label: '日调用上限（次）',
+    type: 'number',
+    min: 1,
+    max: 100000,
+    default: Number(process.env.QCC_DAILY_MAX_CALLS || 200),
+    description: '超过上限后当天不再发起真实请求，避免烧穿预算',
+  },
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.dailyMaxCost',
+    label: '日成本上限（元）',
+    type: 'number',
+    decimals: 2,
+    min: 0,
+    max: 100000,
+    default: Number(process.env.QCC_DAILY_MAX_COST || 0),
+    description: '与「日调用上限」任一触达即停止当日调用；0 表示不限',
+  },
+  {
+    group: '数据渠道 · 企查查',
+    key: 'channel.qcc.riskDomains',
+    label: '采集经营风险与司法域',
+    type: 'boolean',
+    default: false,
+    description: '开启后采集企查查时额外调用 risk / regulation / legal-case 域，更新「经营风险」与「司法」维度；会多消耗额度，建议仅重点客户开启（默认关闭以节省额度）',
+  },
+
   // ===== 数据渠道：天眼查 =====
   {
     group: '数据渠道 · 天眼查',
@@ -312,21 +396,34 @@ export async function saveSettings(values = {}) {
 // 渠道配置（明文）：DB 覆盖优先，未配置时回落到 .env 默认值
 export async function getChannelSettings() {
   const map = await getSettingsMap();
-  const pick = (k, fallback) => {
-    const v = map.get(`channel.tianyancha.${k}`)?.value;
+  const qccDefaults = channelDefaults.qcc || {};
+  const pick = (prefix, k, fallback) => {
+    const v = map.get(`${prefix}.${k}`)?.value;
     if (v === undefined || v === null || v === '') return fallback;
     return v;
   };
   return {
-    enabled: pick('enabled', tyc.enabled !== false),
-    apiKey: pick('apiKey', tyc.apiKey || ''),
-    base: pick('base', tyc.base || 'https://open.api.tianyancha.com'),
-    baseinfoPath: pick('baseinfoPath', tyc.baseinfoPath || '/services/open/ic/verify/2.0'),
-    authScheme: tyc.authScheme ?? '',
-    riskApis: pick('riskApis', tyc.riskApis !== false),
-    unitCost: Number(pick('unitCost', tyc.unitCost || 0.15)),
-    dailyMaxCalls: Number(pick('dailyMaxCalls', tyc.dailyMaxCalls || 200)),
-    dailyMaxCost: Number(pick('dailyMaxCost', tyc.dailyMaxCost || 50)),
+    primary: String(pick('channel', 'primary', 'auto')),
+    qcc: {
+      enabled: pick('channel.qcc', 'enabled', qccDefaults.enabled !== false),
+      apiKey: pick('channel.qcc', 'apiKey', qccDefaults.apiKey || ''),
+      base: pick('channel.qcc', 'base', qccDefaults.base || 'https://agent.qcc.com/mcp'),
+      unitCost: Number(pick('channel.qcc', 'unitCost', qccDefaults.unitCost || 0)),
+      dailyMaxCalls: Number(pick('channel.qcc', 'dailyMaxCalls', qccDefaults.dailyMaxCalls || 200)),
+      dailyMaxCost: Number(pick('channel.qcc', 'dailyMaxCost', qccDefaults.dailyMaxCost || 0)),
+      riskDomains: Boolean(pick('channel.qcc', 'riskDomains', qccDefaults.riskDomains)),
+    },
+    tianyancha: {
+      enabled: pick('channel.tianyancha', 'enabled', tyc.enabled !== false),
+      apiKey: pick('channel.tianyancha', 'apiKey', tyc.apiKey || ''),
+      base: pick('channel.tianyancha', 'base', tyc.base || 'https://open.api.tianyancha.com'),
+      baseinfoPath: pick('channel.tianyancha', 'baseinfoPath', tyc.baseinfoPath || '/services/open/ic/verify/2.0'),
+      authScheme: tyc.authScheme ?? '',
+      riskApis: pick('channel.tianyancha', 'riskApis', tyc.riskApis !== false),
+      unitCost: Number(pick('channel.tianyancha', 'unitCost', tyc.unitCost || 0.15)),
+      dailyMaxCalls: Number(pick('channel.tianyancha', 'dailyMaxCalls', tyc.dailyMaxCalls || 200)),
+      dailyMaxCost: Number(pick('channel.tianyancha', 'dailyMaxCost', tyc.dailyMaxCost || 50)),
+    },
   };
 }
 
