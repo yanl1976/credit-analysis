@@ -184,15 +184,17 @@
       @size-change="onSizeChange"
     />
 
-    <el-dialog v-model="createVisible" title="新建客户" width="560px">
+    <el-dialog v-model="createVisible" title="新建客户" width="640px">
       <div v-if="aiStatus.configured" class="ai-bar">
         <el-input
           v-model="aiQuery"
-          placeholder="输入企业名称，AI 查询后自动填充下方字段"
+          placeholder="输入企业名称，AI 检索候选公司"
           clearable
           @keyup.enter="aiFill"
         />
-        <el-button type="primary" plain :loading="aiLoading" @click="aiFill">AI 查询填充</el-button>
+        <el-button type="primary" plain :loading="aiLoading" @click="aiFill">
+          {{ aiLoading ? 'AI 检索中…' : 'AI 搜索公司' }}
+        </el-button>
       </div>
       <el-alert
         v-if="aiStatus.configured && !aiStatus.search?.configured"
@@ -202,21 +204,37 @@
         class="mb10"
         title="当前未配置搜索 Key，AI 只能依据已有知识推断，可能过时；请务必核验后再保存。"
       />
+
+      <div v-if="aiCandidates.length" class="ai-candidates">
+        <div class="ai-cand-title">找到 {{ aiCandidates.length }} 家候选，点击选择后自动填入名称与信用代码：</div>
+        <div
+          v-for="(c, i) in aiCandidates"
+          :key="i"
+          class="ai-cand-row"
+          :class="{ active: form.name === c.name }"
+          @click="selectCandidate(c)"
+        >
+          <div class="ai-cand-main">
+            <span class="ai-cand-name">{{ c.name }}</span>
+            <span class="ai-cand-code">{{ c.creditCode || '信用代码缺失' }}</span>
+          </div>
+          <div class="ai-cand-sub">{{ [c.legalPerson, c.regStatus, c.province].filter(Boolean).join(' · ') || '—' }}</div>
+          <el-tag size="small" :type="c.confidence === 'low' ? 'info' : 'success'" effect="plain">
+            {{ c.confidence }}
+          </el-tag>
+        </div>
+      </div>
+
       <el-alert
         v-if="aiMeta"
-        :type="aiMeta.confidence === 'low' ? 'warning' : 'success'"
+        type="info"
         :closable="false"
         show-icon
         class="mb10"
-        :title="`AI 生成草稿（置信度 ${aiMeta.confidence}），共 ${aiMeta.evidence?.length || 0} 条检索证据，保存前请逐项核验`"
+        title="已联网检索，请核对候选公司的名称与统一社会信用代码后再选择保存"
       >
-        <div v-if="aiMeta.notes?.length" class="ai-notes">
-          <div v-for="(n, i) in aiMeta.notes" :key="i">· {{ n }}</div>
-        </div>
         <div v-if="aiMeta.evidence?.length" class="ai-notes">
-          <div v-for="(e, i) in aiMeta.evidence" :key="'e' + i">
-            · <el-link type="primary" :href="e.url" target="_blank">{{ e.title || e.url }}</el-link>
-          </div>
+          <div v-for="(e, i) in aiMeta.evidence" :key="'e' + i">· {{ e.title || e.url }}</div>
         </div>
       </el-alert>
 
@@ -304,6 +322,7 @@ const aiQuery = ref('');
 const aiLoading = ref(false);
 const aiFilled = ref(false);
 const aiMeta = ref(null);
+const aiCandidates = ref([]);
 const form = reactive({
   name: '',
   creditCode: '',
@@ -434,6 +453,7 @@ function openCreate() {
   aiQuery.value = '';
   aiFilled.value = false;
   aiMeta.value = null;
+  aiCandidates.value = [];
   createVisible.value = true;
 }
 
@@ -441,21 +461,46 @@ async function aiFill() {
   const name = (aiQuery.value || form.name || '').trim();
   if (!name) return ElMessage.warning('请输入企业名称');
   aiLoading.value = true;
+  aiCandidates.value = [];
+  aiMeta.value = null;
   try {
-    const res = await aiApi.profile(name);
-    const p = res.profile || {};
-    if (p.name) form.name = p.name;
-    if (p.creditCode) form.creditCode = p.creditCode;
-    if (p.legalPerson) form.legalPerson = p.legalPerson;
-    if (p.regStatus) form.regStatus = p.regStatus;
-    if (p.province) form.province = p.province;
-    if (p.industry) form.industry = p.industry;
-    aiFilled.value = true;
-    aiMeta.value = { confidence: res.confidence, notes: res.notes || [], evidence: res.evidence || [], meta: res.meta };
-    ElMessage.success(`AI 已填充（置信度 ${res.confidence}），请核验后保存`);
+    // 异步任务：提交后轮询，避免长请求被 30s 超时切断
+    const { jobId } = await aiApi.startSearch(name);
+    const deadline = Date.now() + 6 * 60 * 1000;
+    let job = null;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      job = await aiApi.searchJob(jobId);
+      if (job && (job.status === 'done' || job.status === 'error')) break;
+    }
+    if (!job || job.status !== 'done') {
+      throw new Error(job?.error || 'AI 检索超时，请稍后重试');
+    }
+    const result = job.result || {};
+    aiCandidates.value = result.candidates || [];
+    aiMeta.value = { evidence: result.evidence || [], meta: result.meta || null };
+    if (aiCandidates.value.length) {
+      ElMessage.success(`找到 ${aiCandidates.value.length} 家候选，请核对后选择`);
+    } else {
+      ElMessage.warning('未找到候选，请手动填写');
+    }
   } finally {
     aiLoading.value = false;
   }
+}
+
+// 选择候选项：自动填入名称与信用代码（及其余已识别字段）
+function selectCandidate(c) {
+  form.name = c.name || form.name;
+  if (c.creditCode) form.creditCode = c.creditCode;
+  if (c.legalPerson) form.legalPerson = c.legalPerson;
+  if (c.regStatus) form.regStatus = c.regStatus;
+  if (c.province) form.province = c.province;
+  if (c.industry) form.industry = c.industry;
+  aiFilled.value = true;
+  ElMessage.success(
+    c.creditCode ? `已填入「${c.name}」及信用代码` : `已填入「${c.name}」（信用代码缺失，请手填）`,
+  );
 }
 
 async function handleCreate() {
@@ -601,6 +646,53 @@ onMounted(async () => {
   color: #606266;
   line-height: 1.7;
   margin-top: 4px;
+}
+.ai-candidates {
+  margin-bottom: 12px;
+}
+.ai-cand-title {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 6px;
+}
+.ai-cand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ai-cand-row:hover {
+  border-color: #409eff;
+  background: #f4f9ff;
+}
+.ai-cand-row.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+.ai-cand-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.ai-cand-name {
+  font-weight: 600;
+  color: #303133;
+}
+.ai-cand-code {
+  font-size: 12px;
+  color: #909399;
+  margin-top: 2px;
+}
+.ai-cand-sub {
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
 }
 /* 统计卡可点击筛选（复用全局 .stat-row / .stat-card） */
 .stat-card.clickable {

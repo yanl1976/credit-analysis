@@ -89,6 +89,9 @@ export const permissionApi = {
 export const aiApi = {
   status: () => http.get('/ai/status'),
   profile: (name) => http.post('/ai/partner-profile', { name }),
+  // 新建客户：按名称搜索候选企业（异步任务，避免长请求超时）
+  startSearch: (name) => http.post('/ai/company-search/job', { name }),
+  searchJob: (jobId) => http.get(`/ai/company-search/jobs/${jobId}`),
   collect: (id) => http.post(`/ai/collect/${id}`),
   // 异步采集：先提交任务拿 jobId，再轮询进度（AI 检索要 1~3 分钟，长连接易被超时切断）
   startCollect: (id) => http.post(`/ai/collect/${id}/job`),

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getAiStatus, profilePartner, aiCollect } from '../services/ai-service.js';
-import { startAiCollectJob, getAiJob } from '../services/ai-job.js';
+import { startAiCollectJob, startAiSearchJob, getAiJob } from '../services/ai-job.js';
 import * as partnerService from '../services/partner-service.js';
 import { authenticate } from '../middleware/auth.js';
 import { dataScope } from '../middleware/data-scope.js';
@@ -28,6 +28,31 @@ router.post('/partner-profile', requirePerm('customer:manage'), async (req, res,
       return res.status(400).json({ code: 400, message: '客户名称必填' });
     }
     res.json({ code: 0, data: await profilePartner(name) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 新建客户：按名称搜索候选企业（异步）——立即返回 jobId，前端轮询 /company-search/jobs/:jobId
+router.post('/company-search/job', requirePerm('customer:manage'), async (req, res, next) => {
+  try {
+    const { name } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ code: 400, message: '客户名称必填' });
+    }
+    res.json({ code: 0, data: startAiSearchJob(name) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+router.get('/company-search/jobs/:jobId', async (req, res, next) => {
+  try {
+    const job = getAiJob(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({ code: 404, message: '任务不存在或已过期（进程重启后需重新发起）' });
+    }
+    res.json({ code: 0, data: job });
   } catch (e) {
     next(e);
   }
